@@ -1,17 +1,24 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: train-timit.py
-# Author: Yuxin Wu
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
-import argparse
+import numpy as np
 import os
-import tensorflow as tf
+import sys
+import argparse
+from collections import Counter
+import operator
+import six
+from six.moves import map, range
 
 from tensorpack import *
-from tensorpack.tfutils.gradproc import GlobalNormClip, SummaryGradient
+from tensorpack.tfutils.gradproc import SummaryGradient, GlobalNormClip
+from tensorpack.utils.globvars import globalns as param
+import tensorpack.tfutils.symbolic_functions as symbf
+import tensorflow as tf
 
 from timitdata import TIMITBatch
-
 rnn = tf.contrib.rnn
 
 
@@ -23,15 +30,16 @@ FEATUREDIM = 39     # MFCC feature dimension
 
 
 class Model(ModelDesc):
-    def inputs(self):
-        return [tf.TensorSpec([None, None, FEATUREDIM], tf.float32, 'feat'),   # bxmaxseqx39
-                tf.TensorSpec([None, None], tf.int64, 'labelidx'),  # label is b x maxlen, sparse
-                tf.TensorSpec([None], tf.int32, 'labelvalue'),
-                tf.TensorSpec([None], tf.int64, 'labelshape'),
-                tf.TensorSpec([None], tf.int32, 'seqlen'),   # b
+    def _get_inputs(self):
+        return [InputDesc(tf.float32, [None, None, FEATUREDIM], 'feat'),   # bxmaxseqx39
+                InputDesc(tf.int64, None, 'labelidx'),  # label is b x maxlen, sparse
+                InputDesc(tf.int32, None, 'labelvalue'),
+                InputDesc(tf.int64, None, 'labelshape'),
+                InputDesc(tf.int32, [None], 'seqlen'),   # b
                 ]
 
-    def build_graph(self, feat, labelidx, labelvalue, labelshape, seqlen):
+    def _build_graph(self, inputs):
+        feat, labelidx, labelvalue, labelshape, seqlen = inputs
         label = tf.SparseTensor(labelidx, labelvalue, labelshape)
 
         cell = rnn.MultiRNNCell([rnn.LSTMBlockCell(num_units=HIDDEN) for _ in range(NLAYER)])
@@ -44,49 +52,49 @@ class Model(ModelDesc):
 
         # o: b x t x HIDDEN
         output = tf.reshape(outputs, [-1, HIDDEN])  # (Bxt) x rnnsize
-        logits = FullyConnected('fc', output, NR_CLASS, activation=tf.identity,
-                                kernel_initializer=tf.truncated_normal_initializer(stddev=0.01))
+        logits = FullyConnected('fc', output, NR_CLASS, nl=tf.identity,
+                                W_init=tf.truncated_normal_initializer(stddev=0.01))
         logits = tf.reshape(logits, (BATCH, -1, NR_CLASS))
 
         loss = tf.nn.ctc_loss(label, logits, seqlen, time_major=False)
 
-        cost = tf.reduce_mean(loss, name='cost')
+        self.cost = tf.reduce_mean(loss, name='cost')
 
         logits = tf.transpose(logits, [1, 0, 2])
 
-        if self.training:
+        isTrain = get_current_tower_context().is_training
+        if isTrain:
             # beam search is too slow to run in training
-            predictions = tf.cast(
-                tf.nn.ctc_greedy_decoder(logits, seqlen)[0][0], tf.int32)
+            predictions = tf.to_int32(
+                tf.nn.ctc_greedy_decoder(logits, seqlen)[0][0])
         else:
-            predictions = tf.cast(
-                tf.nn.ctc_beam_search_decoder(logits, seqlen)[0][0], tf.int32)
+            predictions = tf.to_int32(
+                tf.nn.ctc_beam_search_decoder(logits, seqlen)[0][0])
         err = tf.edit_distance(predictions, label, normalize=True)
         err.set_shape([None])
         err = tf.reduce_mean(err, name='error')
-        summary.add_moving_summary(err, cost)
-        return cost
+        summary.add_moving_summary(err, self.cost)
 
-    def optimizer(self):
-        lr = tf.get_variable('learning_rate', initializer=5e-3, trainable=False)
+    def _get_optimizer(self):
+        lr = symbolic_functions.get_scalar_var('learning_rate', 5e-3, summary=True)
         opt = tf.train.AdamOptimizer(lr, epsilon=1e-3)
         return optimizer.apply_grad_processors(
             opt, [GlobalNormClip(5), SummaryGradient()])
 
 
 def get_data(path, isTrain, stat_file):
-    ds = LMDBSerializer.load(path, shuffle=isTrain)
-    mean, std = serialize.loads(open(stat_file, 'rb').read())
+    ds = LMDBDataPoint(path, shuffle=isTrain)
+    mean, std = serialize.loads(open(stat_file).read())
     ds = MapDataComponent(ds, lambda x: (x - mean) / std)
     ds = TIMITBatch(ds, BATCH)
     if isTrain:
-        ds = MultiProcessRunnerZMQ(ds, 1)
+        ds = PrefetchDataZMQ(ds, 1)
     return ds
 
 
 def get_config(ds_train, ds_test):
     return TrainConfig(
-        data=QueueInput(ds_train),
+        dataflow=ds_train,
         callbacks=[
             ModelSaver(),
             StatMonitorParamSetter('learning_rate', 'error',
@@ -118,5 +126,6 @@ if __name__ == '__main__':
     ds_test = get_data(args.test, False, args.stat)
 
     config = get_config(ds_train, ds_test)
-    config.session_init = SmartInit(args.load)
-    launch_train_with_config(config, SimpleTrainer())
+    if args.load:
+        config.session_init = SaverRestore(args.load)
+    QueueInputTrainer(config).train()

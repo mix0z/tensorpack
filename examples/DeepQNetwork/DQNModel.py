@@ -1,74 +1,57 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: DQNModel.py
-
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
 import abc
-
-from tensorpack import ModelDesc
-from tensorpack.compat import tfv1 as tf
-from tensorpack.tfutils import gradproc, optimizer, summary, varreplace
-from tensorpack.tfutils.scope_utils import auto_reuse_variable_scope
+import tensorflow as tf
+import tensorpack
+from tensorpack import ModelDesc, InputDesc
 from tensorpack.utils import logger
+from tensorpack.tfutils import (
+    collection, summary, get_current_tower_context, optimizer, gradproc)
+from tensorpack.tfutils import symbolic_functions as symbf
+from tensorpack.tfutils.scope_utils import auto_reuse_variable_scope
+assert tensorpack.tfutils.common.get_tf_version_number() >= 1.2
 
 
 class Model(ModelDesc):
-
-    state_dtype = tf.uint8
-
-    # reward discount factor
-    gamma = 0.99
-
-    def __init__(self, state_shape, history, method, num_actions):
-        """
-        Args:
-            state_shape (tuple[int]),
-            history (int):
-        """
-        self.state_shape = tuple(state_shape)
-        self._stacked_state_shape = (-1, ) + self.state_shape + (history, )
-        self.history = history
+    def __init__(self, image_shape, channel, method, num_actions, gamma):
+        self.image_shape = image_shape
+        self.channel = channel
         self.method = method
         self.num_actions = num_actions
+        self.gamma = gamma
 
-    def inputs(self):
-        # When we use h history frames, the current state and the next state will have (h-1) overlapping frames.
-        # Therefore we use a combined state for efficiency:
-        # The first h are the current state, and the last h are the next state.
-        return [tf.TensorSpec((None,) + self.state_shape + (self.history + 1, ), self.state_dtype, 'comb_state'),
-                tf.TensorSpec((None,), tf.int64, 'action'),
-                tf.TensorSpec((None,), tf.float32, 'reward'),
-                tf.TensorSpec((None,), tf.bool, 'isOver')]
+    def _get_inputs(self):
+        # Use a combined state for efficiency.
+        # The first h channels are the current state, and the last h channels are the next state.
+        return [InputDesc(tf.uint8,
+                          (None,) + self.image_shape + (self.channel + 1,),
+                          'comb_state'),
+                InputDesc(tf.int64, (None,), 'action'),
+                InputDesc(tf.float32, (None,), 'reward'),
+                InputDesc(tf.bool, (None,), 'isOver')]
 
     @abc.abstractmethod
-    def _get_DQN_prediction(self, state):
-        """
-        state: N + state_shape + history
-        """
+    def _get_DQN_prediction(self, image):
         pass
 
+    # decorate the function
     @auto_reuse_variable_scope
-    def get_DQN_prediction(self, state):
-        return self._get_DQN_prediction(state)
+    def get_DQN_prediction(self, image):
+        return self._get_DQN_prediction(image)
 
-    def build_graph(self, comb_state, action, reward, isOver):
+    def _build_graph(self, inputs):
+        comb_state, action, reward, isOver = inputs
         comb_state = tf.cast(comb_state, tf.float32)
-        input_rank = comb_state.shape.rank
-
-        state = tf.slice(
-            comb_state,
-            [0] * input_rank,
-            [-1] * (input_rank - 1) + [self.history], name='state')
-
+        state = tf.slice(comb_state, [0, 0, 0, 0], [-1, -1, -1, self.channel], name='state')
         self.predict_value = self.get_DQN_prediction(state)
-        if not self.training:
+        if not get_current_tower_context().is_training:
             return
 
         reward = tf.clip_by_value(reward, -1, 1)
-        next_state = tf.slice(
-            comb_state,
-            [0] * (input_rank - 1) + [1],
-            [-1] * (input_rank - 1) + [self.history], name='next_state')
-        next_state = tf.reshape(next_state, self._stacked_state_shape)
+        next_state = tf.slice(comb_state, [0, 0, 0, 1], [-1, -1, -1, self.channel], name='next_state')
         action_onehot = tf.one_hot(action, self.num_actions, 1.0, 0.0)
 
         pred_action_value = tf.reduce_sum(self.predict_value * action_onehot, 1)  # N,
@@ -76,7 +59,7 @@ class Model(ModelDesc):
             self.predict_value, 1), name='predict_reward')
         summary.add_moving_summary(max_pred_reward)
 
-        with tf.variable_scope('target'), varreplace.freeze_variables(skip_collection=True):
+        with tf.variable_scope('target'):
             targetQ_predict_value = self.get_DQN_prediction(next_state)    # NxA
 
         if self.method != 'Double':
@@ -91,28 +74,27 @@ class Model(ModelDesc):
 
         target = reward + (1.0 - tf.cast(isOver, tf.float32)) * self.gamma * tf.stop_gradient(best_v)
 
-        cost = tf.losses.huber_loss(
+        self.cost = tf.losses.huber_loss(
             target, pred_action_value, reduction=tf.losses.Reduction.MEAN)
         summary.add_param_summary(('conv.*/W', ['histogram', 'rms']),
                                   ('fc.*/W', ['histogram', 'rms']))   # monitor all W
-        summary.add_moving_summary(cost)
-        return cost
+        summary.add_moving_summary(self.cost)
 
-    def optimizer(self):
+    def _get_optimizer(self):
         lr = tf.get_variable('learning_rate', initializer=1e-3, trainable=False)
-        tf.summary.scalar("learning_rate-summary", lr)
-        opt = tf.train.RMSPropOptimizer(lr, decay=0.95, momentum=0.95, epsilon=1e-2)
-        return optimizer.apply_grad_processors(opt, [gradproc.SummaryGradient()])
+        opt = tf.train.AdamOptimizer(lr, epsilon=1e-3)
+        return optimizer.apply_grad_processors(
+            opt, [gradproc.GlobalNormClip(10), gradproc.SummaryGradient()])
 
     @staticmethod
     def update_target_param():
         vars = tf.global_variables()
-        vars_mapping = {x.name: x for x in vars}
         ops = []
+        G = tf.get_default_graph()
         for v in vars:
-            target_name = v.name
+            target_name = v.op.name
             if target_name.startswith('target'):
                 new_name = target_name.replace('target/', '')
-                logger.info("Target Network Update: {} <- {}".format(target_name, new_name))
-                ops.append(v.assign(vars_mapping[new_name]))
+                logger.info("{} <- {}".format(target_name, new_name))
+                ops.append(v.assign(G.get_tensor_by_name(new_name + ':0')))
         return tf.group(*ops, name='update_target_network')

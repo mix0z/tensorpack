@@ -1,21 +1,23 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: InfoGAN-mnist.py
-# Author: Yuxin Wu
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
-import argparse
-import numpy as np
-import os
 import cv2
+import numpy as np
 import tensorflow as tf
+import os
+import sys
+import argparse
 
 from tensorpack import *
-from tensorpack.dataflow import dataset
-from tensorpack.tfutils import gradproc, optimizer, summary
-from tensorpack.tfutils.scope_utils import auto_reuse_variable_scope, under_name_scope
 from tensorpack.utils import viz
-
-from GAN import GANModelDesc, GANTrainer
+from tensorpack.tfutils.scope_utils import auto_reuse_variable_scope, under_name_scope
+from tensorpack.tfutils import optimizer, summary
+import tensorpack.tfutils.symbolic_functions as symbf
+from tensorpack.tfutils.gradproc import ScaleGradient
+from tensorpack.dataflow import dataset
+from GAN import GANTrainer, GANModelDesc
 
 """
 To train:
@@ -24,7 +26,7 @@ To train:
 To visualize:
     ./InfoGAN-mnist.py --sample --load path/to/model
 
-A pretrained model is at http://models.tensorpack.com/#GAN
+A pretrained model is at https://drive.google.com/open?id=0B9IPQTvr2BBkLUF2M0RXU1NYSkE
 """
 
 BATCH = 128
@@ -35,35 +37,6 @@ DIST_PARAM_DIM = NUM_CLASS + NUM_UNIFORM
 NOISE_DIM = 62
 # prior: the assumption how the latent factors are presented in the dataset
 DIST_PRIOR_PARAM = [1.] * NUM_CLASS + [0.] * NUM_UNIFORM
-
-
-def shapeless_placeholder(x, axis, name):
-    """
-    Make the static shape of a tensor less specific.
-
-    If you want to feed to a tensor, the shape of the feed value must match
-    the tensor's static shape. This function creates a placeholder which
-    defaults to x if not fed, but has a less specific static shape than x.
-    See also `tensorflow#5680 <https://github.com/tensorflow/tensorflow/issues/5680>`_.
-
-    Args:
-        x: a tensor
-        axis(int or list of ints): these axes of ``x.get_shape()`` will become
-            None in the output.
-        name(str): name of the output tensor
-
-    Returns:
-        a tensor equal to x, but shape information is partially cleared.
-    """
-    shp = x.get_shape().as_list()
-    if not isinstance(axis, list):
-        axis = [axis]
-    for a in axis:
-        if shp[a] is None:
-            raise ValueError("Axis {} of shape {} is already unknown!".format(a, shp))
-        shp[a] = None
-    x = tf.placeholder_with_default(x, shape=shp, name=name)
-    return x
 
 
 def get_distributions(vec_cat, vec_uniform):
@@ -105,50 +78,49 @@ def sample_prior(batch_size):
 
 
 class Model(GANModelDesc):
-    def inputs(self):
-        return [tf.TensorSpec((None, 28, 28), tf.float32, 'input')]
+    def _get_inputs(self):
+        return [InputDesc(tf.float32, (None, 28, 28), 'input')]
 
     def generator(self, z):
-        l = FullyConnected('fc0', z, 1024, activation=BNReLU)
-        l = FullyConnected('fc1', l, 128 * 7 * 7, activation=BNReLU)
+        l = FullyConnected('fc0', z, 1024, nl=BNReLU)
+        l = FullyConnected('fc1', l, 128 * 7 * 7, nl=BNReLU)
         l = tf.reshape(l, [-1, 7, 7, 128])
-        l = Conv2DTranspose('deconv1', l, 64, 4, 2, activation=BNReLU)
-        l = Conv2DTranspose('deconv2', l, 1, 4, 2, activation=tf.identity)
+        l = Deconv2D('deconv1', l, 64, 4, 2, nl=BNReLU)
+        l = Deconv2D('deconv2', l, 1, 4, 2, nl=tf.identity)
         l = tf.sigmoid(l, name='gen')
         return l
 
     @auto_reuse_variable_scope
     def discriminator(self, imgs):
-        with argscope(Conv2D, kernel_size=4, strides=2):
+        with argscope(Conv2D, nl=tf.identity, kernel_shape=4, stride=2), \
+                argscope(LeakyReLU, alpha=0.2):
             l = (LinearWrap(imgs)
                  .Conv2D('conv0', 64)
-                 .tf.nn.leaky_relu()
+                 .LeakyReLU()
                  .Conv2D('conv1', 128)
-                 .BatchNorm('bn1')
-                 .tf.nn.leaky_relu()
-                 .FullyConnected('fc1', 1024)
-                 .BatchNorm('bn2')
-                 .tf.nn.leaky_relu()())
+                 .BatchNorm('bn1').LeakyReLU()
+                 .FullyConnected('fc1', 1024, nl=tf.identity)
+                 .BatchNorm('bn2').LeakyReLU()())
 
-            logits = FullyConnected('fct', l, 1)
+            logits = FullyConnected('fct', l, 1, nl=tf.identity)
             encoder = (LinearWrap(l)
-                       .FullyConnected('fce1', 128)
-                       .BatchNorm('bne')
-                       .tf.nn.leaky_relu()
-                       .FullyConnected('fce-out', DIST_PARAM_DIM)())
+                       .FullyConnected('fce1', 128, nl=tf.identity)
+                       .BatchNorm('bne').LeakyReLU()
+                       .FullyConnected('fce-out', DIST_PARAM_DIM, nl=tf.identity)())
         return logits, encoder
 
-    def build_graph(self, real_sample):
+    def _build_graph(self, inputs):
+        real_sample = inputs[0]
         real_sample = tf.expand_dims(real_sample, -1)
 
         # sample the latent code:
-        zc = shapeless_placeholder(sample_prior(BATCH), 0, name='z_code')
-        z_noise = shapeless_placeholder(
+        zc = symbf.shapeless_placeholder(sample_prior(BATCH), 0, name='z_code')
+        z_noise = symbf.shapeless_placeholder(
             tf.random_uniform([BATCH, NOISE_DIM], -1, 1), 0, name='z_noise')
         z = tf.concat([zc, z_noise], 1, name='z')
 
-        with argscope([Conv2D, Conv2DTranspose, FullyConnected],
-                      kernel_initializer=tf.truncated_normal_initializer(stddev=0.02)):
+        with argscope([Conv2D, Deconv2D, FullyConnected],
+                      W_init=tf.truncated_normal_initializer(stddev=0.02)):
             with tf.variable_scope('gen'):
                 fake_sample = self.generator(z)
                 fake_sample_viz = tf.cast((fake_sample) * 255.0, tf.uint8, name='viz')
@@ -176,6 +148,8 @@ class Model(GANModelDesc):
         of P, and whose parameters are predicted by the discriminator network.
         """
         with tf.name_scope("mutual_information"):
+            batch_prior = tf.tile(tf.expand_dims(DIST_PRIOR_PARAM, 0), [BATCH, 1], name='batch_prior')
+
             with tf.name_scope('prior_entropy'):
                 cat, uni = get_distributions(DIST_PRIOR_PARAM[:NUM_CLASS], DIST_PRIOR_PARAM[NUM_CLASS:])
                 ents = [cat.entropy(name='cat_entropy'), tf.reduce_sum(uni.entropy(), name='uni_entropy')]
@@ -201,7 +175,7 @@ class Model(GANModelDesc):
         # distinguish between variables of generator and discriminator updates
         self.collect_variables()
 
-    def optimizer(self):
+    def _get_optimizer(self):
         lr = tf.get_variable('learning_rate', initializer=2e-4, dtype=tf.float32, trainable=False)
         opt = tf.train.AdamOptimizer(lr, beta1=0.5, epsilon=1e-6)
         # generator learns 5 times faster
@@ -212,13 +186,23 @@ class Model(GANModelDesc):
 def get_data():
     ds = ConcatData([dataset.Mnist('train'), dataset.Mnist('test')])
     ds = BatchData(ds, BATCH)
-    ds = MapData(ds, lambda dp: [dp[0]])  # only use the image
     return ds
+
+
+def get_config():
+    logger.auto_set_dir('d')
+    return TrainConfig(
+        dataflow=get_data(),
+        callbacks=[ModelSaver(keep_freq=0.1)],
+        model=Model(),
+        steps_per_epoch=500,
+        max_epoch=100,
+    )
 
 
 def sample(model_path):
     pred = OfflinePredictor(PredictConfig(
-        session_init=SmartInit(model_path),
+        session_init=get_model_loader(model_path),
         model=Model(),
         input_names=['z_code', 'z_noise'],
         output_names=['gen/viz']))
@@ -270,11 +254,7 @@ if __name__ == '__main__':
         BATCH = 100
         sample(args.load)
     else:
-        logger.auto_set_dir()
-        GANTrainer(QueueInput(get_data()),
-                   Model()).train_with_defaults(
-            callbacks=[ModelSaver(keep_checkpoint_every_n_hours=0.1)],
-            steps_per_epoch=500,
-            max_epoch=100,
-            session_init=SmartInit(args.load)
-        )
+        config = get_config()
+        if args.load:
+            config.session_init = SaverRestore(args.load)
+        GANTrainer(config).train()

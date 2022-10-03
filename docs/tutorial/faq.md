@@ -16,50 +16,48 @@ If you think:
 
 Then it is a good time to open an issue.
 
-## How to print/dump intermediate results during training
+## How to dump/inspect a model
 
-1. Learn `tf.Print`. Most of the times, adding one line in between:
+When you enable `ModelSaver` as a callback,
+trained models will be stored in TensorFlow checkpoint format, which typically includes a
+`.data-xxxxx` file and a `.index` file. Both are necessary.
 
-   ```python
-   tensor = obtain_a_tensor()
-   tensor = tf.Print(tensor, [tf.shape(tensor), tensor], tensor.name, summarize=100)
-   use_the_tensor(tensor)
-   ```
-   is sufficient.
+To inspect a checkpoint, the easiest tool is `tf.train.NewCheckpointReader`. Please note that it
+expects a model path without the extension.
 
-2. Know [DumpTensors](../modules/callbacks.html#tensorpack.callbacks.DumpTensors),
-	[ProcessTensors](../modules/callbacks.html#tensorpack.callbacks.ProcessTensors) callbacks.
-	And it's also easy to write your own version of them.
+You can dump a cleaner version of the model (without unnecessary variables), using
+`scripts/dump-model-params.py`, as a simple `var-name: value` dict saved in npy/npz format.
+The script expects a metagraph file which is also saved by `ModelSaver`.
 
-3. The [ProgressBar](../modules/callbacks.html#tensorpack.callbacks.ProgressBar)
-	 callback can print some scalar statistics, though not enabled by default.
 
-4. Read [Summary and Logging](./summary.md) for more options on logging.
+## How to load a model / do transfer learning
+
+All model loading (in either training or testing) is through the `session_init` initializer
+in `TrainConfig` or `PredictConfig`.
+The common choices for this option are `SaverRestore` which restores a
+TF checkpoint, or `DictRestore` which restores a dict. (`get_model_loader` is a small helper to
+decide which one to use from a file name.)
+
+Doing transfer learning is trivial.
+Variable restoring is completely based on name match between
+the current graph and the `SessionInit` initializer.
+Therefore, if you want to load some model, just use the same variable name
+so the old value will be loaded into the variable.
+If you want to re-train some layer, just rename it.
+Unmatched variables on both sides will be printed as a warning.
 
 ## How to freeze some variables in training
 
-1. Learn `tf.stop_gradient`. You can simply use `tf.stop_gradient` in your model code in many situations (e.g. to freeze first several layers).
-	 Note that it stops the gradient flow in the current Tensor but your variables may still contribute to the
-	 final loss through other tensors (e.g., weight decay).
+1. You can simply use `tf.stop_gradient` in your model code in some situations (e.g. to freeze first several layers).
 
-2. [varreplace.freeze_variables](../modules/tfutils.html#tensorpack.tfutils.varreplace.freeze_variables) returns a context where variables are freezed.
-	It is implemented by `custom_getter` argument of `tf.variable_scope` -- learn it to gain more control over what & how variables are freezed.
+2. [varreplace.freeze_variables](../modules/tfutils.html#tensorpack.tfutils.varreplace.freeze_variables) can wrap some variables with `tf.stop_gradient`.
 
 3. [ScaleGradient](../modules/tfutils.html#tensorpack.tfutils.gradproc.ScaleGradient) can be used to set the gradients of some variables to 0.
-	But it may be slow, since variables still have gradients.
 
 Note that the above methods only prevent variables being updated by SGD.
 Some variables may be updated by other means,
 e.g., BatchNorm statistics are updated through the `UPDATE_OPS` collection and the [RunUpdateOps](../modules/callbacks.html#tensorpack.callbacks.RunUpdateOps) callback.
 
-## The model does not run on CPUs?
+## My training is slow!
 
-Some TensorFlow ops are not implemented on CPUs.
-For example, it does not support many ops in NCHW format on CPUs.
-Note that if you use MKL-enabled version of TensorFlow, it supports more NCHW ops.
-
-In general, you need to implement the model in a way your version of TensorFlow supports.
-
-## My training seems slow. Why?
-
-Checkout the [Performance Tuning tutorial](./performance-tuning.md)
+Checkout the [Performance Tuning tutorial](performance-tuning.html)

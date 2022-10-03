@@ -1,20 +1,20 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: fs.py
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
-
-import errno
 import os
-import tqdm
 from six.moves import urllib
-
+import errno
+import tqdm
 from . import logger
 from .utils import execute_only_once
 
-__all__ = ['mkdir_p', 'download', 'recursive_walk', 'get_dataset_path', 'normpath']
+__all__ = ['mkdir_p', 'download', 'recursive_walk', 'get_dataset_path']
 
 
 def mkdir_p(dirname):
-    """ Like "mkdir -p", make a dir recursively, but do nothing if the dir exists
+    """ Make a dir recursively, but do nothing if the dir exists
 
     Args:
         dirname(str):
@@ -29,7 +29,7 @@ def mkdir_p(dirname):
             raise e
 
 
-def download(url, dir, filename=None, expect_size=None):
+def download(url, dir, filename=None):
     """
     Download URL to a directory.
     Will figure out the filename automatically from URL, if not given.
@@ -38,13 +38,6 @@ def download(url, dir, filename=None, expect_size=None):
     if filename is None:
         filename = url.split('/')[-1]
     fpath = os.path.join(dir, filename)
-
-    if os.path.isfile(fpath):
-        if expect_size is not None and os.stat(fpath).st_size == expect_size:
-            logger.info("File {} exists! Skip download.".format(filename))
-            return fpath
-        else:
-            logger.warn("File {} exists. Will overwrite with a new download!".format(filename))
 
     def hook(t):
         last_b = [0]
@@ -60,17 +53,12 @@ def download(url, dir, filename=None, expect_size=None):
             fpath, _ = urllib.request.urlretrieve(url, fpath, reporthook=hook(t))
         statinfo = os.stat(fpath)
         size = statinfo.st_size
-    except IOError:
+    except:
         logger.error("Failed to download {}".format(url))
         raise
-    assert size > 0, "Downloaded an empty file from {}!".format(url)
-
-    if expect_size is not None and size != expect_size:
-        logger.error("File downloaded from {} does not match the expected size!".format(url))
-        logger.error("You may have downloaded a broken file, or the upstream may have modified the file.")
-
+    assert size > 0, "Download an empty file!"
     # TODO human-readable size
-    logger.info('Succesfully downloaded ' + filename + ". " + str(size) + ' bytes.')
+    print('Succesfully downloaded ' + filename + ". " + str(size) + ' bytes.')
     return fpath
 
 
@@ -104,20 +92,6 @@ def get_dataset_path(*args):
             logger.info("Created the directory {}.".format(d))
     assert os.path.isdir(d), d
     return os.path.join(d, *args)
-
-
-def normpath(path):
-    """
-    Normalizes a path to a folder by taking into consideration remote storages like Cloud storaged
-    referenced by '://' at the beginning of the path.
-
-    Args:
-        args: path to be normalized.
-
-    Returns:
-        str: normalized path.
-    """
-    return path if '://' in path else os.path.normpath(path)
 
 
 if __name__ == '__main__':

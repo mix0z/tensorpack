@@ -1,5 +1,7 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: debug.py
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
 
 import sys

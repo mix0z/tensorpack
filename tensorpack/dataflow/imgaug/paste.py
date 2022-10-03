@@ -1,12 +1,12 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: paste.py
-
-
-import numpy as np
-from abc import abstractmethod
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
 from .base import ImageAugmentor
-from .transform import TransformFactory
+
+from abc import abstractmethod
+import numpy as np
 
 __all__ = ['CenterPaste', 'BackgroundFiller', 'ConstantBackgroundFiller',
            'RandomPaste']
@@ -52,10 +52,6 @@ class ConstantBackgroundFiller(BackgroundFiller):
         return np.zeros(return_shape, dtype=img.dtype) + self.value
 
 
-# NOTE:
-# apply_coords should be implemeted in paste transform, but not yet done
-
-
 class CenterPaste(ImageAugmentor):
     """
     Paste the image onto the center of a background canvas.
@@ -72,10 +68,7 @@ class CenterPaste(ImageAugmentor):
 
         self._init(locals())
 
-    def get_transform(self, _):
-        return TransformFactory(name=str(self), apply_image=lambda img: self._impl(img))
-
-    def _impl(self, img):
+    def _augment(self, img, _):
         img_shape = img.shape[:2]
         assert self.background_shape[0] >= img_shape[0] and self.background_shape[1] >= img_shape[1]
 
@@ -86,22 +79,24 @@ class CenterPaste(ImageAugmentor):
         background[y0:y0 + img_shape[0], x0:x0 + img_shape[1]] = img
         return background
 
+    def _augment_coords(self, coords, param):
+        raise NotImplementedError()
+
 
 class RandomPaste(CenterPaste):
     """
-    Randomly paste the image onto a background canvas.
+    Randomly paste the image onto a background convas.
     """
 
-    def get_transform(self, img):
+    def _get_augment_params(self, img):
         img_shape = img.shape[:2]
         assert self.background_shape[0] > img_shape[0] and self.background_shape[1] > img_shape[1]
 
         y0 = self._rand_range(self.background_shape[0] - img_shape[0])
         x0 = self._rand_range(self.background_shape[1] - img_shape[1])
-        l = int(x0), int(y0)
-        return TransformFactory(name=str(self), apply_image=lambda img: self._impl(img, l))
+        return int(x0), int(y0)
 
-    def _impl(self, img, loc):
+    def _augment(self, img, loc):
         x0, y0 = loc
         img_shape = img.shape[:2]
         background = self.background_filler.fill(

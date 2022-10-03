@@ -1,37 +1,28 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: hooks.py
-
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
 """ Compatible layers between tf.train.SessionRunHook and Callback"""
 
 import tensorflow as tf
-
-from ..compat import tfv1
-from ..utils.develop import HIDE_DOC
-
 from .base import Callback
 
-__all__ = ['CallbackToHook', 'HookToCallback', 'TFLocalCLIDebugHook']
+
+__all__ = ['CallbackToHook', 'HookToCallback']
 
 
-class CallbackToHook(tfv1.train.SessionRunHook):
+class CallbackToHook(tf.train.SessionRunHook):
+    """ This is only for internal implementation of
+        before_run/after_run callbacks.
+        You shouldn't need to use this.
     """
-    Hooks are less powerful than callbacks so the conversion is incomplete.
-    It only converts the ``before_run/after_run`` calls.
-
-    This is only for internal implementation of
-    ``before_run/after_run`` callbacks.
-    You shouldn't need to use this.
-    """
-
     def __init__(self, cb):
         self._cb = cb
 
-    @HIDE_DOC
     def before_run(self, ctx):
         return self._cb.before_run(ctx)
 
-    @HIDE_DOC
     def after_run(self, ctx, vals):
         self._cb.after_run(ctx, vals)
 
@@ -39,11 +30,8 @@ class CallbackToHook(tfv1.train.SessionRunHook):
 class HookToCallback(Callback):
     """
     Make a ``tf.train.SessionRunHook`` into a callback.
-    Note that when ``SessionRunHook.after_create_session`` is called, the ``coord`` argument will be None.
+    Note that the `coord` argument in `after_create_session` will be None.
     """
-
-    _chief_only = False
-
     def __init__(self, hook):
         """
         Args:
@@ -68,27 +56,3 @@ class HookToCallback(Callback):
 
     def _after_train(self):
         self._hook.end(self.trainer.sess)
-
-
-class TFLocalCLIDebugHook(HookToCallback):
-    """
-    Use the hook `tfdbg.LocalCLIDebugHook` in tensorpack.
-    """
-
-    _chief_only = True
-
-    def __init__(self, *args, **kwargs):
-        """
-        Args:
-            args, kwargs: arguments to create `tfdbg.LocalCLIDebugHook`.
-                Refer to tensorflow documentation for details.
-        """
-        from tensorflow.python import debug as tfdbg
-        super(TFLocalCLIDebugHook, self).__init__(tfdbg.LocalCLIDebugHook(*args, **kwargs))
-
-    def add_tensor_filter(self, *args, **kwargs):
-        """
-        Wrapper of `tfdbg.LocalCLIDebugHook.add_tensor_filter`.
-        Refer to tensorflow documentation for details.
-        """
-        self._hook.add_tensor_filter(*args, **kwargs)

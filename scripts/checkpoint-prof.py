@@ -2,13 +2,12 @@
 # -*- coding: utf-8 -*-
 # File: checkpoint-prof.py
 
-import argparse
-import numpy as np
 import tensorflow as tf
-
+import numpy as np
 from tensorpack import get_default_sess_config, get_op_tensor_name
-from tensorpack.tfutils.sessinit import SmartInit
 from tensorpack.utils import logger
+from tensorpack.tfutils.sessinit import get_model_loader
+import argparse
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -22,10 +21,10 @@ if __name__ == '__main__':
     parser.add_argument('--print-timing', action='store_true')
     args = parser.parse_args()
 
-    tf.train.import_meta_graph(args.meta, clear_devices=True)
+    tf.train.import_meta_graph(args.meta)
     G = tf.get_default_graph()
     with tf.Session(config=get_default_sess_config()) as sess:
-        init = SmartInit(args.model)
+        init = get_model_loader(args.model)
         init.init(sess)
 
         feed = {}
@@ -52,20 +51,16 @@ if __name__ == '__main__':
         sess.run(fetches, feed_dict=feed, options=opt, run_metadata=meta)
 
         if args.print_flops:
-            tf.profiler.profile(
-                G,
-                run_meta=meta,
-                cmd='op',
-                options=tf.profiler.ProfileOptionBuilder.float_operation())
+            tf.contrib.tfprof.model_analyzer.print_model_analysis(
+                G, run_meta=meta,
+                tfprof_options=tf.contrib.tfprof.model_analyzer.FLOAT_OPS_OPTIONS)
 
         if args.print_params:
-            tf.profiler.profile(
-                G,
-                run_meta=meta,
-                options=tf.profiler.ProfileOptionBuilder.trainable_variables_parameter())
+            tf.contrib.tfprof.model_analyzer.print_model_analysis(
+                G, run_meta=meta,
+                tfprof_options=tf.contrib.tfprof.model_analyzer.TRAINABLE_VARS_PARAMS_STAT_OPTIONS)
 
         if args.print_timing:
-            tf.profiler.profile(
-                G,
-                run_meta=meta,
-                options=tf.profiler.ProfileOptionBuilder.time_and_memory())
+            tf.contrib.tfprof.model_analyzer.print_model_analysis(
+                G, run_meta=meta,
+                tfprof_options=tf.contrib.tfprof.model_analyzer.PRINT_ALL_TIMING_MEMORY)

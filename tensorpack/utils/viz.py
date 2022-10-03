@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: viz.py
 # Credit: zxytim
@@ -5,10 +6,11 @@
 import numpy as np
 import os
 import sys
-
-from ..utils.develop import create_dummy_func  # noqa
-from .argtools import shape2d
+import io
 from .fs import mkdir_p
+from .argtools import shape2d
+from .rect import BoxBase, IntBox
+from .palette import PALETTE_RGB
 
 try:
     import cv2
@@ -16,10 +18,22 @@ except ImportError:
     pass
 
 
-__all__ = ['interactive_imshow',
+__all__ = ['pyplot2img', 'interactive_imshow',
            'stack_patches', 'gen_stack_patches',
            'dump_dataflow_images', 'intensity_to_rgb',
            'draw_boxes']
+
+
+def pyplot2img(plt):
+    """ Convert a pyplot instance to image """
+    buf = io.BytesIO()
+    plt.axis('off')
+    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0)
+    buf.seek(0)
+    rawbuf = np.frombuffer(buf.getvalue(), dtype='uint8')
+    im = cv2.imdecode(rawbuf, cv2.IMREAD_COLOR)
+    buf.close()
+    return im
 
 
 def interactive_imshow(img, lclick_cb=None, rclick_cb=None, **kwargs):
@@ -45,10 +59,7 @@ def interactive_imshow(img, lclick_cb=None, rclick_cb=None, **kwargs):
         elif event == cv2.EVENT_RBUTTONUP and rclick_cb is not None:
             rclick_cb(img, x, y)
     cv2.setMouseCallback(name, mouse_cb)
-    key = cv2.waitKey(-1)
-    while key >= 128:
-        key = cv2.waitKey(-1)
-    key = chr(key & 0xff)
+    key = chr(cv2.waitKey(-1) & 0xff)
     cb_name = 'key_cb_' + key
     if cb_name in kwargs:
         kwargs[cb_name](img)
@@ -58,17 +69,10 @@ def interactive_imshow(img, lclick_cb=None, rclick_cb=None, **kwargs):
         sys.exit()
     elif key == 's':
         cv2.imwrite('out.png', img)
-    elif key in ['+', '=']:
-        img = cv2.resize(img, None, fx=1.3, fy=1.3, interpolation=cv2.INTER_CUBIC)
-        interactive_imshow(img, lclick_cb, rclick_cb, **kwargs)
-    elif key == '-':
-        img = cv2.resize(img, None, fx=0.7, fy=0.7, interpolation=cv2.INTER_CUBIC)
-        interactive_imshow(img, lclick_cb, rclick_cb, **kwargs)
 
 
-def _preprocess_patch_list(plist):
+def _preproecss_patch_list(plist):
     plist = np.asarray(plist)
-    assert plist.dtype != np.object
     if plist.ndim == 3:
         plist = plist[:, :, :, np.newaxis]
     assert plist.ndim == 4 and plist.shape[3] in [1, 3], plist.shape
@@ -91,15 +95,15 @@ def _pad_patch_list(plist, bgcolor):
 
     plist = _pad_channel(plist)
     shapes = [x.shape for x in plist]
-    ph = max(s[0] for s in shapes)
-    pw = max(s[1] for s in shapes)
+    ph = max([s[0] for s in shapes])
+    pw = max([s[1] for s in shapes])
 
     ret = np.zeros((len(plist), ph, pw, 3), dtype=plist[0].dtype)
     ret[:, :, :] = bgcolor
     for idx, p in enumerate(plist):
         s = p.shape
-        sh = (ph - s[0]) // 2
-        sw = (pw - s[1]) // 2
+        sh = (ph - s[0]) / 2
+        sw = (pw - s[1]) / 2
         ret[idx, sh:sh + s[0], sw:sw + s[1], :] = p
     return ret
 
@@ -160,7 +164,7 @@ def stack_patches(
     """
     Stacked patches into grid, to produce visualizations like the following:
 
-    .. image:: https://github.com/tensorpack/tensorpack/raw/master/examples/GAN/demo/BEGAN-CelebA-samples.jpg
+    .. image:: https://github.com/ppwwyyxx/tensorpack/raw/master/examples/GAN/demo/BEGAN-CelebA-samples.jpg
 
     Args:
         patch_list(list[ndarray] or ndarray): NHW or NHWC images in [0,255].
@@ -180,8 +184,8 @@ def stack_patches(
         np.ndarray: the stacked image.
     """
     if pad:
-        patch_list = _pad_patch_list(patch_list, bgcolor)
-    patch_list = _preprocess_patch_list(patch_list)
+        patch_list = _pad_patch_list(patch_list)
+    patch_list = _preproecss_patch_list(patch_list)
 
     if lclick_cb is not None:
         viz = True
@@ -225,7 +229,7 @@ def gen_stack_patches(patch_list,
         np.ndarray: the stacked image.
     """
     # setup parameters
-    patch_list = _preprocess_patch_list(patch_list)
+    patch_list = _preproecss_patch_list(patch_list)
     if lclick_cb is not None:
         viz = True
     ph, pw = patch_list.shape[1:3]
@@ -295,7 +299,7 @@ def dump_dataflow_images(df, index=0, batched=True,
     df.reset_state()
     cnt = 0
     while True:
-        for dp in df:
+        for dp in df.get_data():
             if not batched:
                 imgbatch = [dp[index]]
             else:
@@ -350,47 +354,28 @@ def intensity_to_rgb(intensity, cmap='cubehelix', normalize=False):
     return intensity.astype('float32') * 255.0
 
 
-def draw_text(img, pos, text, color, font_scale=0.4):
-    """
-    Draw text on an image.
-
-    Args:
-        pos (tuple): x, y; the position of the text
-        text (str):
-        font_scale (float):
-        color (tuple): a 3-tuple BGR color in [0, 255]
-    """
-    img = img.astype(np.uint8)
-    x0, y0 = int(pos[0]), int(pos[1])
-    # Compute text size.
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    ((text_w, text_h), _) = cv2.getTextSize(text, font, font_scale, 1)
-    # Place text background.
-    if x0 + text_w > img.shape[1]:
-        x0 = img.shape[1] - text_w
-    if y0 - int(1.15 * text_h) < 0:
-        y0 = int(1.15 * text_h)
-    back_topleft = x0, y0 - int(1.3 * text_h)
-    back_bottomright = x0 + text_w, y0
-    cv2.rectangle(img, back_topleft, back_bottomright, color, -1)
-    # Show text.
-    text_bottomleft = x0, y0 - int(0.25 * text_h)
-    cv2.putText(img, text, text_bottomleft, font, font_scale, (222, 222, 222), lineType=cv2.LINE_AA)
-    return img
-
-
 def draw_boxes(im, boxes, labels=None, color=None):
     """
     Args:
-        im (np.ndarray): a BGR image in range [0,255]. It will not be modified.
-        boxes (np.ndarray): a numpy array of shape Nx4 where each row is [x1, y1, x2, y2].
+        im (np.ndarray): a BGR image. It will not be modified.
+        boxes (np.ndarray or list[BoxBase]): If an ndarray,
+            must be of shape Nx4 where the second dimension is [x1, y1, x2, y2].
         labels: (list[str] or None)
-        color: a 3-tuple BGR color (in range [0, 255])
+        color: a 3-tuple (in range [0, 255]). By default will choose automatically.
 
     Returns:
         np.ndarray: a new image.
     """
-    boxes = np.asarray(boxes, dtype='int32')
+    FONT = cv2.FONT_HERSHEY_SIMPLEX
+    FONT_SCALE = 0.4
+    if isinstance(boxes, list):
+        arr = np.zeros((len(boxes), 4), dtype='int32')
+        for idx, b in enumerate(boxes):
+            assert isinstance(b, BoxBase), b
+            arr[idx, :] = [int(b.x1), int(b.y1), int(b.x2), int(b.y2)]
+        boxes = arr
+    else:
+        boxes = boxes.astype('int32')
     if labels is not None:
         assert len(labels) == len(boxes), "{} != {}".format(len(labels), len(boxes))
     areas = (boxes[:, 2] - boxes[:, 0] + 1) * (boxes[:, 3] - boxes[:, 1] + 1)
@@ -402,22 +387,47 @@ def draw_boxes(im, boxes, labels=None, color=None):
         "Image shape: {}\n Boxes:\n{}".format(str(im.shape), str(boxes))
 
     im = im.copy()
-    if color is None:
-        color = (15, 128, 15)
+    COLOR = (218, 218, 218) if color is None else color
+    COLOR_DIFF_WEIGHT = np.asarray((3, 4, 2), dtype='int32')    # https://www.wikiwand.com/en/Color_difference
+    COLOR_CANDIDATES = PALETTE_RGB[[0, 1, 2, 3, 18, 113], :]
     if im.ndim == 2 or (im.ndim == 3 and im.shape[2] == 1):
         im = cv2.cvtColor(im, cv2.COLOR_GRAY2BGR)
     for i in sorted_inds:
         box = boxes[i, :]
+
+        best_color = COLOR
         if labels is not None:
-            im = draw_text(im, (box[0], box[1]), labels[i], color=color)
+            label = labels[i]
+
+            # find the best placement for the text
+            ((linew, lineh), _) = cv2.getTextSize(label, FONT, FONT_SCALE, 1)
+            bottom_left = [box[0] + 1, box[1] - 0.3 * lineh]
+            top_left = [box[0] + 1, box[1] - 1.3 * lineh]
+            if top_left[1] < 0:     # out of image
+                top_left[1] = box[3] - 1.3 * lineh
+                bottom_left[1] = box[3] - 0.3 * lineh
+            textbox = IntBox(int(top_left[0]), int(top_left[1]),
+                             int(top_left[0] + linew), int(top_left[1] + lineh))
+            textbox.clip_by_shape(im.shape[:2])
+            if color is None:
+                # find the best color
+                mean_color = textbox.roi(im).mean(axis=(0, 1))
+                best_color_ind = (np.square(COLOR_CANDIDATES - mean_color) *
+                                  COLOR_DIFF_WEIGHT).sum(axis=1).argmax()
+                best_color = COLOR_CANDIDATES[best_color_ind].tolist()
+
+            cv2.putText(im, label, (textbox.x1, textbox.y2),
+                        FONT, FONT_SCALE, color=best_color, lineType=cv2.LINE_AA)
         cv2.rectangle(im, (box[0], box[1]), (box[2], box[3]),
-                      color=color, thickness=1)
+                      color=best_color, thickness=1)
     return im
 
 
+from ..utils.develop import create_dummy_func   # noqa
 try:
     import matplotlib.pyplot as plt
 except (ImportError, RuntimeError):
+    pyplot2img = create_dummy_func('pyplot2img', 'matplotlib')    # noqa
     intensity_to_rgb = create_dummy_func('intensity_to_rgb', 'matplotlib')    # noqa
 
 if __name__ == '__main__':
@@ -436,7 +446,7 @@ if __name__ == '__main__':
         img2 = cv2.resize(img, (300, 300))
         viz = stack_patches([img, img2], 1, 2, pad=True, viz=True)
 
-    if False:
+    if True:
         img = cv2.imread('cat.jpg')
         boxes = np.asarray([
             [10, 30, 200, 100],

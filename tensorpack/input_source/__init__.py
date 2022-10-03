@@ -1,12 +1,6 @@
-#  -*- coding: utf-8 -*-
+#  -*- coding: UTF-8 -*-
 #  File: __init__.py
-
-# https://github.com/celery/kombu/blob/7d13f9b95d0b50c94393b962e6def928511bfda6/kombu/__init__.py#L34-L36
-STATICA_HACK = True
-globals()['kcah_acitats'[::-1].upper()] = False
-if STATICA_HACK:
-    from .input_source_base import *
-    from .input_source import *
+#  Author: Yuxin Wu <ppwwyyxx@gmail.com>
 
 from pkgutil import iter_modules
 import os

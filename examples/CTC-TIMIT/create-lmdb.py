@@ -1,18 +1,19 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: create-lmdb.py
-# Author: Yuxin Wu
-import argparse
-import numpy as np
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
+import sys
 import os
-import string
-import bob.ap
 import scipy.io.wavfile as wavfile
+import string
+import numpy as np
+import argparse
 
-from tensorpack.dataflow import DataFlow, LMDBSerializer
-from tensorpack.utils import fs, logger, serialize, get_tqdm
+from tensorpack import *
 from tensorpack.utils.argtools import memoized
 from tensorpack.utils.stats import OnlineMoments
+from tensorpack.utils.utils import get_tqdm
+import bob.ap
 
 CHARSET = set(string.ascii_lowercase + ' ')
 PHONEME_LIST = [
@@ -33,7 +34,6 @@ def read_timit_txt(f):
     line = line.replace('.', '').lower()
     line = filter(lambda c: c in CHARSET, line)
     f.close()
-    ret = []
     for c in line:
         ret.append(WORD_DIC[c])
     return np.asarray(ret)
@@ -84,14 +84,14 @@ class RawTIMIT(DataFlow):
         self.filelists = [k for k in fs.recursive_walk(self.dirname)
                           if k.endswith('.wav')]
         logger.info("Found {} wav files ...".format(len(self.filelists)))
-        assert len(self.filelists), "Found no '.wav' files!"
+        assert len(self.filelists), self.filelists
         assert label in ['phoneme', 'letter'], label
         self.label = label
 
-    def __len__(self):
+    def size(self):
         return len(self.filelists)
 
-    def __iter__(self):
+    def get_data(self):
         for f in self.filelists:
             feat = get_feature(f)
             if self.label == 'phoneme':
@@ -102,13 +102,15 @@ class RawTIMIT(DataFlow):
 
 
 def compute_mean_std(db, fname):
-    ds = LMDBSerializer.load(db, shuffle=False)
+    ds = LMDBDataPoint(db, shuffle=False)
     ds.reset_state()
     o = OnlineMoments()
-    for dp in get_tqdm(ds):
-        feat = dp[0]  # len x dim
-        for f in feat:
-            o.feed(f)
+    with get_tqdm(total=ds.size()) as bar:
+        for dp in ds.get_data():
+            feat = dp[0]  # len x dim
+            for f in feat:
+                o.feed(f)
+            bar.update()
     logger.info("Writing to {} ...".format(fname))
     with open(fname, 'wb') as f:
         f.write(serialize.dumps([o.mean, o.std]))
@@ -130,6 +132,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.command == 'build':
         ds = RawTIMIT(args.dataset)
-        LMDBSerializer.save(ds, args.db)
+        dftools.dump_dataflow_to_lmdb(ds, args.db)
     elif args.command == 'stat':
         compute_mean_std(args.db, args.output)

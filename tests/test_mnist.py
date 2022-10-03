@@ -5,7 +5,7 @@ class MnistTest(TestPythonScript):
 
     @property
     def script(self):
-        return '../examples/basics/mnist-convnet.py'
+        return '../examples/mnist-convnet.py'
 
     def test(self):
         self.assertSurvive(self.script, args=None)

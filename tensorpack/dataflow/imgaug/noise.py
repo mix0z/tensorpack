@@ -1,22 +1,22 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: noise.py
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
-
+from .base import ImageAugmentor
 import numpy as np
 import cv2
-
-from .base import PhotometricAugmentor
 
 __all__ = ['JpegNoise', 'GaussianNoise', 'SaltPepperNoise']
 
 
-class JpegNoise(PhotometricAugmentor):
-    """ Random JPEG noise. """
+class JpegNoise(ImageAugmentor):
+    """ Random Jpeg noise. """
 
     def __init__(self, quality_range=(40, 100)):
         """
         Args:
-            quality_range (tuple): range to sample JPEG quality
+            quality_range (tuple): range to sample Jpeg quality
         """
         super(JpegNoise, self).__init__()
         self._init(locals())
@@ -29,7 +29,7 @@ class JpegNoise(PhotometricAugmentor):
         return cv2.imdecode(enc, 1).astype(img.dtype)
 
 
-class GaussianNoise(PhotometricAugmentor):
+class GaussianNoise(ImageAugmentor):
     """
     Add random Gaussian noise N(0, sigma^2) of the same shape to img.
     """
@@ -53,9 +53,9 @@ class GaussianNoise(PhotometricAugmentor):
         return ret.astype(old_dtype)
 
 
-class SaltPepperNoise(PhotometricAugmentor):
+class SaltPepperNoise(ImageAugmentor):
     """ Salt and pepper noise.
-        Randomly set some elements in image to 0 or 255, regardless of its channels.
+        Randomly set some elements in img to 0 or 255, regardless of its channels.
     """
 
     def __init__(self, white_prob=0.05, black_prob=0.05):

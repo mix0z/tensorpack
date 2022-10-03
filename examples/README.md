@@ -1,59 +1,41 @@
 
-# Tensorpack Examples
+# tensorpack examples
 
-Training examples with __reproducible performance__.
-
-__The word "reproduce" should always mean reproduce performance__.
-With the magic of SGD, wrong deep learning code often appears to work, especially if you try it on toy datasets.
-Github is full of deep learning code that "implements" but does not "reproduce"
-methods, and you'll not know whether the implementation is actually correct.
-See [Unawareness of Deep Learning Mistakes](https://medium.com/@ppwwyyxx/unawareness-of-deep-learning-mistakes-d5b5774da0ba).
-
-We refuse toy examples.
-Instead of showing tiny CNNs trained on MNIST/Cifar10,
-we provide training scripts that reproduce well-known papers.
-
-We refuse low-quality implementations.
-Unlike most open source repos which only __implement__ methods,
-[Tensorpack examples](examples) faithfully __reproduce__
-experiments and performance in the paper,
-so you're confident that they are correct.
-
+Training examples with __reproducible__ and meaningful performance.
 
 ## Getting Started:
-These are the only toy examples in tensorpack. They are supposed to be just demos.
-+ [An illustrative MNIST example with explanation of the framework](basics/mnist-convnet.py)
-+ Tensorpack supports any symbolic libraries. See the same MNIST example written with [tf.layers](basics/mnist-tflayers.py), and [with weights visualizations](basics/mnist-visualizations.py)
-+ A tiny [Cifar ConvNet](basics/cifar-convnet.py) and [SVHN ConvNet](basics/svhn-digit-convnet.py)
++ [An illustrative mnist example with explanation of the framework](mnist-convnet.py)
++ The same mnist example using [tf-slim](mnist-tfslim.py), [Keras](mnist-keras.py), and [with weights visualizations](mnist-visualizations.py)
 + [A boilerplate file to start with, for your own tasks](boilerplate.py)
 
 ## Vision:
-| Name                                                                                                                                                  | Performance                 |
-| ---                                                                                                                                                   | ---                         |
-| Train [ResNet](ResNet), [ShuffleNet and other models](ImageNetModels) on ImageNet                                                                     | reproduce 10 papers         |
-| [Train Mask/Faster R-CNN on COCO](FasterRCNN)                                                                                                         | reproduce 7 papers          |
-| [Unsupervised learning with Momentum Contrast](https://github.com/ppwwyyxx/moco.tensorflow) (MoCo)                                                    | reproduce 2 papers          |
-| [Generative Adversarial Network(GAN) variants](GAN), including DCGAN, InfoGAN, <br/> Conditional GAN, WGAN, BEGAN, DiscoGAN, Image to Image, CycleGAN | visually reproduce 8 papers |
-| [DoReFa-Net: training binary / low-bitwidth CNN on ImageNet](DoReFa-Net)                                                                              | reproduce 4 papers          |
-| [Adversarial training with state-of-the-art robustness](https://github.com/facebookresearch/ImageNet-Adversarial-Training)                            | official code for the paper |
-| [Fully-convolutional Network for Holistically-Nested Edge Detection(HED)](HED)                                                                        | visually reproduce          |
-| [Spatial Transformer Networks on MNIST addition](SpatialTransformer)                                                                                  | reproduce the paper         |
-| [Visualize CNN saliency maps](Saliency)                                                                                                               | visually reproduce          |
-| [Similarity learning on MNIST](SimilarityLearning)                                                                                                    |                             |
-| Single-image super-resolution using [EnhanceNet](SuperResolution)                                                                                     |                             |
-| Learn steering filters with [Dynamic Filter Networks](DynamicFilterNetwork)                                                                           | visually reproduce          |
-| Load a pre-trained [AlexNet, VGG, or Convolutional Pose Machines](CaffeModels)                                                                        |                             |
-| Load a pre-trained [FlowNet2-S, FlowNet2-C, FlowNet2](OpticalFlow)                                                                                    |                             |
++ [A tiny SVHN ConvNet with 97.8% accuracy](svhn-digit-convnet.py)
++ Train [ResNet](ResNet) and [ShuffleNet](ShuffleNet) on ImageNet
++ [Train ResNet50-Faster-RCNN on COCO](FasterRCNN)
++ [DoReFa-Net: training binary / low-bitwidth CNN on ImageNet](DoReFa-Net)
++ [Generative Adversarial Network(GAN) variants](GAN), including DCGAN, InfoGAN, Conditional GAN, WGAN, BEGAN, DiscoGAN, Image to Image, CycleGAN
++ [Inception-BN and InceptionV3](Inception)
++ [Fully-convolutional Network for Holistically-Nested Edge Detection(HED)](HED)
++ [Spatial Transformer Networks on MNIST addition](SpatialTransformer)
++ [Visualize CNN saliency maps](Saliency)
++ [Similarity learning on MNIST](SimilarityLearning)
++ Learn steering filters with [Dynamic Filter Networks](DynamicFilterNetwork)
++ Load a pre-trained [AlexNet](load-alexnet.py) or [VGG16](load-vgg16.py) model
++ Load a pre-trained [Convolutional Pose Machines](ConvolutionalPoseMachines/)
 
 ## Reinforcement Learning:
-| Name                                                                                                     | Performance         |
-| ---                                                                                                      | ---                 |
-| [Deep Q-Network(DQN) variants on Atari games](DeepQNetwork), including <br/> DQN, DoubleDQN, DuelingDQN. | reproduce the paper |
-| [Asynchronous Advantage Actor-Critic(A3C) on Atari games](A3C-Gym)                                       | reproduce the paper |
++ [Deep Q-Network(DQN) variants on Atari games](DeepQNetwork), including DQN, DoubleDQN, DuelingDQN.
++ [Asynchronous Advantage Actor-Critic(A3C) with demos on OpenAI Gym](A3C-Gym)
 
 ## Speech / NLP:
-| Name                                                | Performance              |
-| ---                                                 | ---                      |
-| [LSTM-CTC for speech recognition](CTC-TIMIT)        | reproduce the paper      |
-| [char-rnn for fun](Char-RNN)                        | fun                      |
-| [LSTM language model on PennTreebank](PennTreebank) | reproduce reference code |
++ [LSTM-CTC for speech recognition](CTC-TIMIT)
++ [char-rnn for fun](Char-RNN)
++ [LSTM language model on PennTreebank](PennTreebank)
+
+
+Note to contributors:
+
+Example needs to satisfy one of the following:
++ Reproduce performance of a published or well-known paper.
++ Get state-of-the-art performance on some task.
++ Illustrate a new way of using the library that is currently not covered.

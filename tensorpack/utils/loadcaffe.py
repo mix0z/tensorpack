@@ -1,15 +1,16 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: loadcaffe.py
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
-
+import sys
 import numpy as np
 import os
-import sys
 
-from . import logger
-from .concurrency import subproc_call
-from .fs import download, get_dataset_path
 from .utils import change_env
+from .fs import download, get_dataset_path
+from .concurrency import subproc_call
+from . import logger
 
 __all__ = ['load_caffe', 'get_caffe_pb']
 
@@ -97,7 +98,6 @@ def load_caffe(model_desc, model_file):
     """
     Load a caffe model. You must be able to ``import caffe`` to use this
     function.
-
     Args:
         model_desc (str): path to caffe model description file (.prototxt).
         model_file (str): path to caffe model parameter file (.caffemodel).
@@ -117,7 +117,6 @@ def load_caffe(model_desc, model_file):
 def get_caffe_pb():
     """
     Get caffe protobuf.
-
     Returns:
         The imported caffe protobuf module.
     """
@@ -127,17 +126,18 @@ def get_caffe_pb():
         download(CAFFE_PROTO_URL, dir)
         assert os.path.isfile(os.path.join(dir, 'caffe.proto'))
 
-        cmd = "protoc --version"
-        version, ret = subproc_call(cmd, timeout=3)
-        if ret != 0:
-            sys.exit(1)
-        try:
-            version = version.decode('utf-8')
-            version = float('.'.join(version.split(' ')[1].split('.')[:2]))
-            assert version >= 2.7, "Require protoc>=2.7 for Python3"
-        except Exception:
-            logger.exception("protoc --version gives: " + str(version))
-            raise
+        if sys.version_info.major == 3:
+            cmd = "protoc --version"
+            version, ret = subproc_call(cmd, timeout=3)
+            if ret != 0:
+                sys.exit(1)
+            try:
+                version = version.decode('utf-8')
+                version = float('.'.join(version.split(' ')[1].split('.')[:2]))
+                assert version >= 2.7, "Require protoc>=2.7 for Python3"
+            except:
+                logger.exception("protoc --version gives: " + str(version))
+                raise
 
         cmd = 'cd {} && protoc caffe.proto --python_out .'.format(dir)
         ret = os.system(cmd)
@@ -153,14 +153,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('model', help='.prototxt file')
     parser.add_argument('weights', help='.caffemodel file')
-    parser.add_argument('output', help='output npz file')
+    parser.add_argument('output', help='output npy file')
     args = parser.parse_args()
     ret = load_caffe(args.model, args.weights)
 
-    if args.output.endswith('.npz'):
-        np.savez_compressed(args.output, **ret)
-    elif args.output.endswith('.npy'):
-        logger.warn("Please use npz format instead!")
-        np.save(args.output, ret)
-    else:
-        raise ValueError("Unknown format {}".format(args.output))
+    np.save(args.output, ret)

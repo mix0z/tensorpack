@@ -1,19 +1,21 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: steps.py
 
 """ Some common step callbacks. """
 
-import tqdm
+import tensorflow as tf
 from six.moves import zip
+import tqdm
 
-from ..compat import tfv1 as tf
-from ..tfutils.common import get_global_step_var, get_op_tensor_name
 from ..utils import logger
-from ..utils.naming import GLOBAL_STEP_INCR_OP_NAME
 from ..utils.utils import get_tqdm_kwargs
+from ..utils.naming import GLOBAL_STEP_INCR_OP_NAME
+from ..tfutils.common import (
+    get_op_tensor_name, get_op_or_tensor_by_name, get_global_step_var)
 from .base import Callback
 
-__all__ = ['TensorPrinter', 'ProgressBar', 'SessionRunTimeout']
+__all__ = ['TensorPrinter', 'StepTensorPrinter', 'ProgressBar']
 
 
 class TensorPrinter(Callback):
@@ -27,11 +29,11 @@ class TensorPrinter(Callback):
             names(list): list of string, the names of the tensors to print.
         """
         names = [get_op_tensor_name(n)[1] for n in names]
-        logger.warn("Using tf.Print in the graph is much faster than TensorPrinter!")
+        logger.warn("Using print_stat or tf.Print in the graph is much faster than StepTensorPrinter!")
         self._names = names
 
     def _setup_graph(self):
-        self._fetches = self.get_tensors_maybe_in_tower(self._names)
+        self._fetches = get_op_or_tensor_by_name(self._names)
 
     def _before_run(self, _):
         return self._fetches
@@ -43,18 +45,18 @@ class TensorPrinter(Callback):
             logger.info("{}: {}".format(n, v))
 
 
-class ProgressBar(Callback):
-    """ A progress bar based on tqdm.
+StepTensorPrinter = TensorPrinter
 
-    This callback is one of the :func:`DEFAULT_CALLBACKS()`.
-    """
+
+class ProgressBar(Callback):
+    """ A progress bar based on tqdm. Enabled by default. """
 
     _chief_only = False
 
-    def __init__(self, names=()):
+    def __init__(self, names=[]):
         """
         Args:
-            names(tuple[str]): the names of the tensors to monitor
+            names(list): list of string, the names of the tensors to monitor
                 on the progress bar.
         """
         super(ProgressBar, self).__init__()
@@ -68,10 +70,8 @@ class ProgressBar(Callback):
         self._total = self.trainer.steps_per_epoch
         self._tqdm_args = get_tqdm_kwargs(leave=True)
 
-        self._fetches = self.get_tensors_maybe_in_tower(self._names) or None
+        self._fetches = get_op_or_tensor_by_name(self._names) or None
         if self._fetches:
-            for t in self._fetches:
-                assert t.shape.ndims == 0, "ProgressBar can only print scalars, not {}".format(t)
             self._fetches = tf.train.SessionRunArgs(self._fetches)
             self._tqdm_args['bar_format'] = self._tqdm_args['bar_format'] + "{postfix} "
 
@@ -104,8 +104,8 @@ class ProgressBar(Callback):
 
 class MaintainStepCounter(Callback):
     """
-    It maintains the global step in the graph, making sure it's increased by one at every `hooked_sess.run`.
-    This callback is used internally by the trainer, you don't need to worry about it.
+    It maintains the global step in the graph, making sure it's increased by one.
+    This callback is used by the trainer, you don't need to worry about it.
     """
 
     _chief_only = False
@@ -117,9 +117,10 @@ class MaintainStepCounter(Callback):
         # ensure it exists
         gs_var = get_global_step_var()
         with tf.name_scope(None):
-            self.gs_incr_op = tf.assign_add(
-                gs_var, 1,
-                name=GLOBAL_STEP_INCR_OP_NAME).op
+            with self.graph.colocate_with(gs_var):
+                self.gs_incr_op = tf.assign_add(
+                    gs_var, 1,
+                    name=GLOBAL_STEP_INCR_OP_NAME).op
         self._fetches = tf.train.SessionRunArgs(self.gs_incr_op)
 
     def _before_train(self):
@@ -133,21 +134,3 @@ class MaintainStepCounter(Callback):
     def _after_run(self, _, __):
         # Keep python-side global_step in agreement with TF-side
         self.trainer.loop._global_step += 1
-
-
-class SessionRunTimeout(Callback):
-    """
-    Add timeout option to each sess.run call.
-    """
-    def __init__(self, timeout_in_ms):
-        """
-        Args:
-            timeout_in_ms (int):
-        """
-        self._timeout = int(timeout_in_ms)
-
-        opt = tf.RunOptions(timeout_in_ms=timeout_in_ms)
-        self._runargs = tf.train.SessionRunArgs(fetches=[], options=opt)
-
-    def _before_run(self, _):
-        return self._runargs

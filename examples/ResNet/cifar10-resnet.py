@@ -1,33 +1,39 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
+# -*- coding: UTF-8 -*-
 # File: cifar10-resnet.py
-# Author: Yuxin Wu
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
+import numpy as np
 import argparse
 import os
-import tensorflow as tf
 
 from tensorpack import *
+from tensorpack.tfutils.symbolic_functions import *
+from tensorpack.tfutils.summary import *
+from tensorpack.utils.gpu import get_nr_gpu
 from tensorpack.dataflow import dataset
-from tensorpack.tfutils.summary import add_moving_summary, add_param_summary
-from tensorpack.utils.gpu import get_num_gpu
+
+import tensorflow as tf
+from tensorflow.contrib.layers import variance_scaling_initializer
 
 """
-CIFAR10 ResNet example. Reproduce the 2-GPU settings in:
-"Deep Residual Learning for Image Recognition", with following exceptions:
-* This implementation uses the architecture variant proposed in:
-  "Identity Mappings in Deep Residual Networks"
-* This model uses the whole training set instead of a train-val split.
+CIFAR10 ResNet example. See:
+Deep Residual Learning for Image Recognition, arxiv:1512.03385
+This implementation uses the variants proposed in:
+Identity Mappings in Deep Residual Networks, arxiv:1603.05027
 
-Results:
-* ResNet-110(n=18): about 5.9% val error after 64k steps (8.3 step/s)
+I can reproduce the results on 2 TitanX for
+n=5, about 7.1% val error after 67k steps (20.4 step/s)
+n=18, about 5.95% val error after 80k steps (5.6 step/s, not converged)
+n=30: a 182-layer network, about 5.6% val error after 51k steps (3.4 step/s)
+This model uses the whole training set instead of a train-val split.
 
 To train:
     ./cifar10-resnet.py --gpu 0,1
 """
 
-# paper uses 2 GPU with a total batch size of 128
-BATCH_SIZE = 64  # per-gpu batch size
+BATCH_SIZE = 128
+NUM_UNITS = None
 
 
 class Model(ModelDesc):
@@ -36,11 +42,12 @@ class Model(ModelDesc):
         super(Model, self).__init__()
         self.n = n
 
-    def inputs(self):
-        return [tf.TensorSpec([None, 32, 32, 3], tf.float32, 'input'),
-                tf.TensorSpec([None], tf.int32, 'label')]
+    def _get_inputs(self):
+        return [InputDesc(tf.float32, [None, 32, 32, 3], 'input'),
+                InputDesc(tf.int32, [None], 'label')]
 
-    def build_graph(self, image, label):
+    def _build_graph(self, inputs):
+        image, label = inputs
         image = image / 128.0
         assert tf.test.is_gpu_available()
         image = tf.transpose(image, [0, 3, 1, 2])
@@ -56,9 +63,9 @@ class Model(ModelDesc):
                 out_channel = in_channel
                 stride1 = 1
 
-            with tf.variable_scope(name):
+            with tf.variable_scope(name) as scope:
                 b1 = l if first else BNReLU(l)
-                c1 = Conv2D('conv1', b1, out_channel, strides=stride1, activation=BNReLU)
+                c1 = Conv2D('conv1', b1, out_channel, stride=stride1, nl=BNReLU)
                 c2 = Conv2D('conv2', c1, out_channel)
                 if increase_dim:
                     l = AvgPooling('pool', l, 2)
@@ -67,10 +74,10 @@ class Model(ModelDesc):
                 l = c2 + l
                 return l
 
-        with argscope([Conv2D, AvgPooling, BatchNorm, GlobalAvgPooling], data_format='channels_first'), \
-                argscope(Conv2D, use_bias=False, kernel_size=3,
-                         kernel_initializer=tf.variance_scaling_initializer(scale=2.0, mode='fan_out')):
-            l = Conv2D('conv0', image, 16, activation=BNReLU)
+        with argscope([Conv2D, AvgPooling, BatchNorm, GlobalAvgPooling], data_format='NCHW'), \
+                argscope(Conv2D, nl=tf.identity, use_bias=False, kernel_shape=3,
+                         W_init=variance_scaling_initializer(mode='FAN_OUT')):
+            l = Conv2D('conv0', image, 16, nl=BNReLU)
             l = residual('res1.0', l, first=True)
             for k in range(1, self.n):
                 l = residual('res1.{}'.format(k), l)
@@ -88,13 +95,13 @@ class Model(ModelDesc):
             # 8,c=64
             l = GlobalAvgPooling('gap', l)
 
-        logits = FullyConnected('linear', l, 10)
-        tf.nn.softmax(logits, name='output')
+        logits = FullyConnected('linear', l, out_dim=10, nl=tf.identity)
+        prob = tf.nn.softmax(logits, name='output')
 
         cost = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=label)
         cost = tf.reduce_mean(cost, name='cross_entropy_loss')
 
-        wrong = tf.cast(tf.logical_not(tf.nn.in_top_k(logits, label, 1)), tf.float32, name='wrong_vector')
+        wrong = prediction_incorrect(logits, label)
         # monitor training error
         add_moving_summary(tf.reduce_mean(wrong, name='train_error'))
 
@@ -105,10 +112,10 @@ class Model(ModelDesc):
         add_moving_summary(cost, wd_cost)
 
         add_param_summary(('.*/W', ['histogram']))   # monitor W
-        return tf.add_n([cost, wd_cost], name='cost')
+        self.cost = tf.add_n([cost, wd_cost], name='cost')
 
-    def optimizer(self):
-        lr = tf.get_variable('learning_rate', initializer=0.01, trainable=False)
+    def _get_optimizer(self):
+        lr = get_scalar_var('learning_rate', 0.01, summary=True)
         opt = tf.train.MomentumOptimizer(lr, 0.9)
         return opt
 
@@ -116,7 +123,7 @@ class Model(ModelDesc):
 def get_data(train_or_test):
     isTrain = train_or_test == 'train'
     ds = dataset.Cifar10(train_or_test)
-    pp_mean = ds.get_per_pixel_mean(('train',))
+    pp_mean = ds.get_per_pixel_mean()
     if isTrain:
         augmentors = [
             imgaug.CenterPaste((40, 40)),
@@ -131,48 +138,40 @@ def get_data(train_or_test):
     ds = AugmentImageComponent(ds, augmentors)
     ds = BatchData(ds, BATCH_SIZE, remainder=not isTrain)
     if isTrain:
-        ds = MultiProcessRunner(ds, 3, 2)
+        ds = PrefetchData(ds, 3, 2)
     return ds
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', help='comma separated list of GPU(s) to use.')
-    parser.add_argument('-n', '--num-units',
+    parser.add_argument('-n', '--num_units',
                         help='number of units in each stage',
-                        type=int, default=5)
-    parser.add_argument('--load', help='load model for training')
-    parser.add_argument('--logdir', help='log directory')
+                        type=int, default=18)
+    parser.add_argument('--load', help='load model')
     args = parser.parse_args()
+    NUM_UNITS = args.num_units
 
     if args.gpu:
         os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
-    if args.logdir:
-        logger.set_logger_dir(args.logdir)
-    else:
-        logger.auto_set_dir()
+    logger.auto_set_dir()
 
     dataset_train = get_data('train')
     dataset_test = get_data('test')
 
     config = TrainConfig(
-        model=Model(n=args.num_units),
+        model=Model(n=NUM_UNITS),
         dataflow=dataset_train,
         callbacks=[
             ModelSaver(),
             InferenceRunner(dataset_test,
-                            [ScalarStats('cost'), ClassificationError('wrong_vector')]),
+                            [ScalarStats('cost'), ClassificationError()]),
             ScheduledHyperParamSetter('learning_rate',
-                                      [(1, 0.1), (32, 0.01), (48, 0.001)])
+                                      [(1, 0.1), (82, 0.01), (123, 0.001), (300, 0.0002)])
         ],
-        # ResNet Sec. 4.2:
-        # models are trained with a mini-batch size of 128 on two GPUs. We
-        # start with a learningrate of 0.1, divide it by 10 at 32k and 48k iterations,
-        # andterminate training at 64k iterations
-        steps_per_epoch=1000,
-        max_epoch=64,
-        session_init=SmartInit(args.load),
+        max_epoch=400,
+        nr_tower=max(get_nr_gpu(), 1),
+        session_init=SaverRestore(args.load) if args.load else None
     )
-    num_gpu = max(get_num_gpu(), 1)
-    launch_train_with_config(config, SyncMultiGPUTrainerParameterServer(num_gpu))
+    SyncMultiGPUTrainerParameterServer(config).train()

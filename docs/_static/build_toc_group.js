@@ -8,7 +8,7 @@ $(function (){
 
     selected.each(function(i,e) {
 
-      var groupName = $(e).find('a')[0].href;
+      var groupName = $(e).find('a.internal')[0].href;
       groupName = groupName.substr(groupName.lastIndexOf('/')+1);
       groupName = groupName.substr(0,groupName.lastIndexOf(".html"));
 
@@ -16,10 +16,6 @@ $(function (){
       var fullname = e.id;
       if (fullname.startsWith('tensorpack.'))
         fullname = fullname.substr(11);
-
-      if (fullname == "dataflow.MultiProcessMapData") {
-        groupName = "parallel_map";
-      }
 
       var n = $(e).children('.descname').clone();
       n[0].innerText = fullname;

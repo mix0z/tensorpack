@@ -1,22 +1,16 @@
-# -*- coding: utf-8 -*-
+# -*- coding: UTF-8 -*-
 # File: deform.py
+# Author: Yuxin Wu <ppwwyyxx@gmail.com>
 
-
+from .base import ImageAugmentor
+from ...utils import logger
 import numpy as np
 
-from ...utils import logger
-from .base import ImageAugmentor
-from .transform import TransformFactory
-
-__all__ = []
-
-# Code was temporarily kept here for a future reference in case someone needs it
-# But it was already deprecated,
-# because this augmentation is not a general one that people will often find helpful.
+__all__ = ['GaussianDeform']
 
 
 class GaussianMap(object):
-    """ Generate Gaussian weighted deformation map"""
+    """ Generate gaussian weighted deformation map"""
     # TODO really needs speedup
 
     def __init__(self, image_shape, sigma=0.5):
@@ -98,11 +92,14 @@ class GaussianDeform(ImageAugmentor):
             self.randrange = randrange
         self.sigma = sigma
 
-    def get_transform(self, img):
+    def _get_augment_params(self, img):
         v = self.rng.rand(self.K, 2).astype('float32') - 0.5
         v = v * 2 * self.randrange
-        return TransformFactory(name=str(self), apply_image=lambda img: self._augment(img, v))
+        return v
 
     def _augment(self, img, v):
         grid = self.grid + np.dot(self.gws, v)
         return np_sample(img, grid)
+
+    def _augment_coords(self, coords, param):
+        raise NotImplementedError()

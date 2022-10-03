@@ -1,20 +1,20 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: concurrency.py
-
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
 import multiprocessing
-import numpy as np
-from concurrent.futures import Future
-import tensorflow as tf
+import six
 from six.moves import queue, range
+import tensorflow as tf
 
-from ..compat import tfv1
-from ..tfutils.model_utils import describe_trainable_vars
 from ..utils import logger
-from ..utils.concurrency import DIE, ShareSessionThread, StoppableThread
-from .base import AsyncPredictorBase, OfflinePredictor, OnlinePredictor
+from ..utils.concurrency import DIE, StoppableThread, ShareSessionThread
+from ..tfutils.model_utils import describe_trainable_vars
+from .base import OnlinePredictor, OfflinePredictor, AsyncPredictorBase
 
-__all__ = ['MultiThreadAsyncPredictor']
+__all__ = ['MultiProcessPredictWorker', 'MultiProcessQueuePredictWorker',
+           'MultiThreadAsyncPredictor']
 
 
 class MultiProcessPredictWorker(multiprocessing.Process):
@@ -36,7 +36,7 @@ class MultiProcessPredictWorker(multiprocessing.Process):
             have workers that run on multiGPUs
         """
         if self.idx != 0:
-            from tensorpack.models.registry import disable_layer_logging
+            from tensorpack.models.common import disable_layer_logging
             disable_layer_logging()
         self.predictor = OfflinePredictor(self.config)
         if self.idx == 0:
@@ -71,7 +71,7 @@ class MultiProcessQueuePredictWorker(MultiProcessPredictWorker):
                 self.outqueue.put((DIE, None))
                 return
             else:
-                self.outqueue.put((tid, self.predictor(*dp)))
+                self.outqueue.put((tid, self.predictor(dp)))
 
 
 class PredictorWorkerThread(StoppableThread, ShareSessionThread):
@@ -89,7 +89,7 @@ class PredictorWorkerThread(StoppableThread, ShareSessionThread):
             while not self.stopped():
                 batched, futures = self.fetch_batch()
                 try:
-                    outputs = self.func(*batched)
+                    outputs = self.func(batched)
                 except tf.errors.CancelledError:
                     for f in futures:
                         f.cancel()
@@ -122,22 +122,19 @@ class PredictorWorkerThread(StoppableThread, ShareSessionThread):
                 futures.append(f)
             except queue.Empty:
                 break   # do not wait
-
-        for k in range(nr_input_var):
-            batched[k] = np.asarray(batched[k])
         return batched, futures
 
 
 class MultiThreadAsyncPredictor(AsyncPredictorBase):
     """
-    An multithreaded online async predictor which runs a list of OnlinePredictor.
+    An multithread online async predictor which runs a list of OnlinePredictor.
     It would do an extra batching internally.
     """
 
     def __init__(self, predictors, batch_size=5):
         """
         Args:
-            predictors (list): a list of OnlinePredictor available to use.
+            predictors (list): a list of OnlinePredictor avaiable to use.
             batch_size (int): the maximum of an internal batch.
         """
         assert len(predictors)
@@ -154,9 +151,15 @@ class MultiThreadAsyncPredictor(AsyncPredictorBase):
                 self.input_queue, f, id, batch_size=batch_size)
             for id, f in enumerate(predictors)]
 
+        if six.PY2:
+            # TODO XXX set logging here to avoid affecting TF logging
+            import tornado.options as options
+            options.parse_command_line(['--logging=debug'])
+            logger.warn("MultiThreadAsyncPredictor is inefficient in Python 2! Switch to Python 3 instead.")
+
     def start(self):
         if self._need_default_sess:
-            assert tfv1.get_default_session() is not None, \
+            assert tf.get_default_session() is not None, \
                 "Not session is bind to predictors, " \
                 "MultiThreadAsyncPredictor.start() has to be called under a default session!"
         for t in self.threads:
@@ -164,16 +167,20 @@ class MultiThreadAsyncPredictor(AsyncPredictorBase):
 
     def put_task(self, dp, callback=None):
         """
-        Args:
-            dp (list): A datapoint as inputs. It could be either batched or not
-                batched depending on the predictor implementation).
-            callback: a thread-safe callback. When the results are ready, it will be called
-                with the "future" object.
-        Returns:
-            concurrent.futures.Future: a Future of results.
+        Same as in :meth:`AsyncPredictorBase.put_task`.
         """
         f = Future()
         if callback is not None:
             f.add_done_callback(callback)
         self.input_queue.put((dp, f))
         return f
+
+
+try:
+    if six.PY2:
+        from tornado.concurrent import Future
+    else:
+        from concurrent.futures import Future
+except ImportError:
+    from ..utils.develop import create_dummy_class
+    MultiThreadAsyncPredictor = create_dummy_class('MultiThreadAsyncPredictor', 'tornado.concurrent')  # noqa

@@ -1,23 +1,29 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
+# -*- coding: UTF-8 -*-
 # File: load-resnet.py
-# Author: Eric Yujia Huang <yujiah1@andrew.cmu.edu>
-#         Yuxin Wu
+# Author: Eric Yujia Huang yujiah1@andrew.cmu.edu
+#         Yuxin Wu <ppwwyyxx@gmail.com>
 
-import argparse
-import functools
-import numpy as np
-import re
 import cv2
-import six
+import functools
 import tensorflow as tf
+import argparse
+import os
+import re
+import numpy as np
+import six
+from six.moves import zip
+from tensorflow.contrib.layers import variance_scaling_initializer
 
 from tensorpack import *
-from tensorpack.dataflow.dataset import ILSVRCMeta
 from tensorpack.utils import logger
+from tensorpack.utils.stats import RatioCounter
+from tensorpack.tfutils.symbolic_functions import *
+from tensorpack.tfutils.summary import *
+from tensorpack.dataflow.dataset import ILSVRCMeta, ILSVRC12
 
-from imagenet_utils import ImageNetModel, eval_classification, get_imagenet_dataflow
-from resnet_model import resnet_bottleneck, resnet_group
+from imagenet_utils import eval_on_ILSVRC12, get_imagenet_dataflow
+from resnet_model import resnet_group, resnet_bottleneck
 
 DEPTH = None
 CFG = {
@@ -28,33 +34,36 @@ CFG = {
 
 
 class Model(ModelDesc):
-    def inputs(self):
-        return [tf.TensorSpec([None, 224, 224, 3], tf.float32, 'input'),
-                tf.TensorSpec([None], tf.int32, 'label')]
+    def _get_inputs(self):
+        return [InputDesc(tf.float32, [None, 224, 224, 3], 'input'),
+                InputDesc(tf.int32, [None], 'label')]
 
-    def build_graph(self, image, label):
+    def _build_graph(self, inputs):
+        image, label = inputs
         blocks = CFG[DEPTH]
 
         bottleneck = functools.partial(resnet_bottleneck, stride_first=True)
 
         # tensorflow with padding=SAME will by default pad [2,3] here.
-        # but caffe conv with stride will pad [3,2]
-        image = tf.pad(image, [[0, 0], [3, 2], [3, 2], [0, 0]])
+        # but caffe conv with stride will pad [3,3]
+        image = tf.pad(image, [[0, 0], [3, 3], [3, 3], [0, 0]])
         image = tf.transpose(image, [0, 3, 1, 2])
         with argscope([Conv2D, MaxPooling, GlobalAvgPooling, BatchNorm],
-                      data_format='channels_first'), \
-                argscope(Conv2D, use_bias=False):
+                      data_format='NCHW'), \
+                argscope(Conv2D, nl=tf.identity, use_bias=False,
+                         W_init=variance_scaling_initializer(mode='FAN_OUT')):
             logits = (LinearWrap(image)
-                      .Conv2D('conv0', 64, 7, strides=2, activation=BNReLU, padding='VALID')
-                      .MaxPooling('pool0', 3, strides=2, padding='SAME')
-                      .apply2(resnet_group, 'group0', bottleneck, 64, blocks[0], 1)
-                      .apply2(resnet_group, 'group1', bottleneck, 128, blocks[1], 2)
-                      .apply2(resnet_group, 'group2', bottleneck, 256, blocks[2], 2)
-                      .apply2(resnet_group, 'group3', bottleneck, 512, blocks[3], 2)
+                      .Conv2D('conv0', 64, 7, stride=2, nl=BNReLU, padding='VALID')
+                      .MaxPooling('pool0', shape=3, stride=2, padding='SAME')
+                      .apply(resnet_group, 'group0', bottleneck, 64, blocks[0], 1)
+                      .apply(resnet_group, 'group1', bottleneck, 128, blocks[1], 2)
+                      .apply(resnet_group, 'group2', bottleneck, 256, blocks[2], 2)
+                      .apply(resnet_group, 'group3', bottleneck, 512, blocks[3], 2)
                       .GlobalAvgPooling('gap')
-                      .FullyConnected('linear', 1000)())
-        tf.nn.softmax(logits, name='prob')
-        ImageNetModel.compute_loss_and_error(logits, label)
+                      .FullyConnected('linear', 1000, nl=tf.identity)())
+        prob = tf.nn.softmax(logits, name='prob')
+        prediction_incorrect(logits, label, name='wrong-top1')
+        prediction_incorrect(logits, label, 5, name='wrong-top5')
 
 
 def get_inference_augmentor():
@@ -79,7 +88,7 @@ def get_inference_augmentor():
 def run_test(params, input):
     pred_config = PredictConfig(
         model=Model(),
-        session_init=SmartInit(params),
+        session_init=DictRestore(params),
         input_names=['input'],
         output_names=['prob']
     )
@@ -89,7 +98,7 @@ def run_test(params, input):
     im = cv2.imread(input).astype('float32')
     im = prepro.augment(im)
     im = np.reshape(im, (1, 224, 224, 3))
-    outputs = predict_func(im)
+    outputs = predict_func([im])
     prob = outputs[0]
 
     ret = prob[0].argsort()[-10:][::-1]
@@ -143,7 +152,7 @@ def convert_param_name(param):
     for k, v in six.iteritems(param):
         try:
             newname = name_conversion(k)
-        except Exception:
+        except:
             logger.error("Exception when processing caffe layer {}".format(k))
             raise
         logger.info("Name Transform: " + k + ' --> ' + newname)
@@ -154,7 +163,7 @@ def convert_param_name(param):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--load', required=True,
-                        help='.npz model file generated by tensorpack.utils.loadcaffe')
+                        help='.npy model file generated by tensorpack.utils.loadcaffe')
     parser.add_argument('-d', '--depth', help='resnet depth', required=True, type=int, choices=[50, 101, 152])
     parser.add_argument('--input', help='an input image')
     parser.add_argument('--convert', help='npz output file to save the converted model')
@@ -163,7 +172,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     DEPTH = args.depth
 
-    param = dict(np.load(args.load))
+    param = np.load(args.load, encoding='latin1').item()
     param = convert_param_name(param)
 
     if args.convert:
@@ -172,6 +181,6 @@ if __name__ == '__main__':
 
     if args.eval:
         ds = get_imagenet_dataflow(args.eval, 'val', 128, get_inference_augmentor())
-        eval_classification(Model(), SmartRestore(param), ds)
+        eval_on_ILSVRC12(Model(), DictRestore(param), ds)
     elif args.input:
         run_test(param, args.input)

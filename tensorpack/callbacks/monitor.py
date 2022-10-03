@@ -1,30 +1,26 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: monitor.py
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
-
-import json
-import numpy as np
-import operator
 import os
-import re
+import numpy as np
 import shutil
 import time
+import operator
 from collections import defaultdict
-from datetime import datetime
 import six
-import threading
+import json
+import re
 
-from ..compat import tfv1 as tf
-from ..libinfo import __git_version__
-from ..tfutils.summary import create_image_summary, create_scalar_summary
-from ..utils import fs, logger
-from ..utils.develop import HIDE_DOC
+import tensorflow as tf
+from ..utils import logger
+from ..tfutils.summary import create_scalar_summary, create_image_summary
 from .base import Callback
 
-__all__ = ['MonitorBase', 'Monitors',
-           'TFEventWriter', 'JSONWriter',
-           'ScalarPrinter', 'SendMonitorData',
-           'CometMLMonitor']
+__all__ = ['TrainingMonitor', 'Monitors',
+           'TFSummaryWriter', 'TFEventWriter', 'JSONWriter',
+           'ScalarPrinter', 'SendMonitorData']
 
 
 def image_to_nhwc(arr):
@@ -42,21 +38,16 @@ def image_to_nhwc(arr):
     return arr
 
 
-class MonitorBase(Callback):
+class TrainingMonitor(Callback):
     """
-    Base class for monitors which monitor a training progress, by processing different types of
+    Monitor a training progress, by processing different types of
     summary/statistics from trainer.
 
     .. document private functions
     .. automethod:: _setup_graph
     """
-
-    _chief_only = False
-
     def setup_graph(self, trainer):
-        # Set attributes following Callback.setup_graph
         self.trainer = trainer
-        self.graph = tf.get_default_graph()
         self._setup_graph()
 
     def _setup_graph(self):
@@ -100,14 +91,8 @@ class MonitorBase(Callback):
     # TODO process other types
 
 
-class NoOpMonitor(MonitorBase):
-    def __init__(self, name=None):
-        self._name = name
-
-    def __str__(self):
-        if self._name is None:
-            return "NoOpMonitor"
-        return "NoOpMonitor({})".format(self._name)
+class NoOpMonitor(TrainingMonitor):
+    pass
 
 
 class Monitors(Callback):
@@ -115,22 +100,17 @@ class Monitors(Callback):
     Merge monitors together for trainer to use.
 
     In training, each trainer will create a :class:`Monitors` instance,
-    and you can access it through ``trainer.monitors``.
-    You should use ``trainer.monitors`` for logging and it will dispatch your
+    and you can access it through `trainer.monitors`.
+    You should use `trainer.monitors` for logging and it will dispatch your
     logs to each sub-monitor.
     """
-
-    _chief_only = False
-
     def __init__(self, monitors):
         self._scalar_history = ScalarHistory()
         self._monitors = monitors + [self._scalar_history]
         for m in self._monitors:
-            assert isinstance(m, MonitorBase), m
+            assert isinstance(m, TrainingMonitor), m
 
     def _setup_graph(self):
-        # scalar_history's other methods were not called.
-        # but they are not useful for now
         self._scalar_history.setup_graph(self.trainer)
 
     def _dispatch(self, func):
@@ -149,13 +129,9 @@ class Monitors(Callback):
         for val in summary.value:
             if val.WhichOneof('value') == 'simple_value':
                 val.tag = re.sub('tower[0-9]+/', '', val.tag)   # TODO move to subclasses
-
-                # TODO This hack is still needed, seem to disappear only when
-                # compiled from source.
                 suffix = '-summary'  # tensorflow#6150, tensorboard#59
                 if val.tag.endswith(suffix):
                     val.tag = val.tag[:-len(suffix)]
-
                 self._dispatch(lambda m: m.process_scalar(val.tag, val.simple_value))
 
         self._dispatch(lambda m: m.process_summary(summary))
@@ -189,7 +165,7 @@ class Monitors(Callback):
 
     def put_event(self, evt):
         """
-        Put an :class:`tf.Event`.
+        Put an tf.Event.
         `step` and `wall_time` fields of :class:`tf.Event` will be filled automatically.
 
         Args:
@@ -202,193 +178,104 @@ class Monitors(Callback):
     def get_latest(self, name):
         """
         Get latest scalar value of some data.
-
-        If you run multiprocess training, keep in mind that
-        the data is perhaps only available on chief process.
-
-        Returns:
-            scalar
         """
-        return self._scalar_history.get_latest(name)[1]
+        return self._scalar_history.get_latest(name)
 
     def get_history(self, name):
         """
         Get a history of the scalar value of some data.
-
-        If you run multiprocess training, keep in mind that
-        the data is perhaps only available on chief process.
-
-        Returns:
-            a list of (global_step, value) pairs: history data for this scalar
         """
         return self._scalar_history.get_history(name)
 
 
-class TFEventWriter(MonitorBase):
+class TFEventWriter(TrainingMonitor):
     """
     Write summaries to TensorFlow event file.
     """
-    def __init__(self, logdir=None, max_queue=10, flush_secs=120, split_files=False):
-        """
-        Args:
-            logdir: ``logger.get_logger_dir()`` by default.
-            max_queue, flush_secs: Same as in :class:`tf.summary.FileWriter`.
-            split_files: if True, split events to multiple files rather than
-                append to a single file. Useful on certain filesystems where append is expensive.
-        """
-        if logdir is None:
-            logdir = logger.get_logger_dir()
-        assert tf.gfile.IsDirectory(logdir), logdir
-        self._logdir = fs.normpath(logdir)
-        self._max_queue = max_queue
-        self._flush_secs = flush_secs
-        self._split_files = split_files
-
-    def __new__(cls, logdir=None, max_queue=10, flush_secs=120, **kwargs):
-        if logdir is None:
-            logdir = logger.get_logger_dir()
-
-        if logdir is not None:
+    def __new__(cls):
+        if logger.LOG_DIR:
             return super(TFEventWriter, cls).__new__(cls)
         else:
             logger.warn("logger directory was not set. Ignore TFEventWriter.")
-            return NoOpMonitor("TFEventWriter")
+            return NoOpMonitor()
 
     def _setup_graph(self):
-        self._writer = tf.summary.FileWriter(
-            self._logdir, max_queue=self._max_queue, flush_secs=self._flush_secs)
+        self._writer = tf.summary.FileWriter(logger.LOG_DIR, graph=tf.get_default_graph())
 
-    def _write_graph(self):
-        self._writer.add_graph(self.graph)
-
-    def _before_train(self):
-        # Writing the graph is expensive (takes ~2min) when the graph is large.
-        # Therefore use a separate thread. It will then run in the
-        # background while TF is warming up in the first several iterations.
-        self._write_graph_thread = threading.Thread(target=self._write_graph)
-        self._write_graph_thread.daemon = True
-        self._write_graph_thread.start()
-
-    @HIDE_DOC
     def process_summary(self, summary):
         self._writer.add_summary(summary, self.global_step)
 
-    @HIDE_DOC
     def process_event(self, evt):
         self._writer.add_event(evt)
 
     def _trigger(self):     # flush every epoch
         self._writer.flush()
-        if self._split_files:
-            self._writer.close()
-            self._writer.reopen()  # open new file
 
     def _after_train(self):
         self._writer.close()
 
 
-class JSONWriter(MonitorBase):
+def TFSummaryWriter(*args, **kwargs):
+    logger.warn("TFSummaryWriter was renamed to TFEventWriter!")
+    return TFEventWriter(*args, **kwargs)
+
+
+class JSONWriter(TrainingMonitor):
     """
-    Write all scalar data to a json file under ``logger.get_logger_dir()``, grouped by their global step.
-    If found an earlier json history file, will append to it.
+    Write all scalar data to a json file under ``logger.LOG_DIR``, grouped by their global step.
+    This monitor also attemps to recover the epoch number during setup,
+    if an existing json file is found at the same place.
     """
 
-    FILENAME = 'stats.json'
+    FILENAME = 'stat.json'
     """
-    The name of the json file. Do not change it.
+    The name of the json file.
     """
 
     def __new__(cls):
-        if logger.get_logger_dir():
+        if logger.LOG_DIR:
             return super(JSONWriter, cls).__new__(cls)
         else:
             logger.warn("logger directory was not set. Ignore JSONWriter.")
-            return NoOpMonitor("JSONWriter")
-
-    @staticmethod
-    def load_existing_json(dir=None):
-        """
-        Look for an existing json under dir (defaults to
-        :meth:`logger.get_logger_dir()`) named "stats.json",
-        and return the loaded list of statistics if found. Returns None otherwise.
-        """
-        if dir is None:
-            dir = logger.get_logger_dir()
-        fname = os.path.join(dir, JSONWriter.FILENAME)
-        if tf.gfile.Exists(fname):
-            with open(fname) as f:
-                stats = json.load(f)
-                assert isinstance(stats, list), type(stats)
-                return stats
-        return None
-
-    @staticmethod
-    def load_existing_epoch_number(dir=None):
-        """
-        Try to load the latest epoch number from an existing json stats file (if any).
-        Returns None if not found.
-        """
-        stats = JSONWriter.load_existing_json(dir)
-        try:
-            return int(stats[-1]['epoch_num'])
-        except Exception:
-            return None
-
-    # initialize the stats here, because before_train from other callbacks may use it
-    def _setup_graph(self):
-        self._stats = []
-        self._stat_now = {}
-        self._last_gs = -1
+            return NoOpMonitor()
 
     def _before_train(self):
-        stats = JSONWriter.load_existing_json()
-        self._fname = os.path.join(logger.get_logger_dir(), JSONWriter.FILENAME)
-        if stats is not None:
+        self._dir = logger.LOG_DIR
+        self._fname = os.path.join(self._dir, self.FILENAME)
+
+        if os.path.isfile(self._fname):
+            logger.info("Found existing JSON at {}, will append to it.".format(self._fname))
+            with open(self._fname) as f:
+                self._stats = json.load(f)
+                assert isinstance(self._stats, list), type(self._stats)
+
             try:
-                epoch = stats[-1]['epoch_num'] + 1
+                epoch = self._stats[-1]['epoch_num'] + 1
             except Exception:
-                epoch = None
-
-            # check against the current training settings
-            # therefore this logic needs to be in before_train stage
-            starting_epoch = self.trainer.loop.starting_epoch
-            if epoch is None or epoch == starting_epoch:
-                logger.info("Found existing JSON inside {}, will append to it.".format(logger.get_logger_dir()))
-                self._stats = stats
+                pass
             else:
-                logger.warn(
-                    "History epoch={} from JSON is not the predecessor of the current starting_epoch={}".format(
-                        epoch - 1, starting_epoch))
-                logger.warn("If you want to resume old training, either use `AutoResumeTrainConfig` "
-                            "or correctly set the new starting_epoch yourself to avoid inconsistency. ")
+                # TODO is this a good idea?
+                logger.info("Found training history from JSON, now starting from epoch number {}.".format(epoch))
+                self.trainer.loop.starting_epoch = epoch
+        else:
+            self._stats = []
+        self._stat_now = {}
 
-                backup_fname = JSONWriter.FILENAME + '.' + datetime.now().strftime('%m%d-%H%M%S')
-                backup_fname = os.path.join(logger.get_logger_dir(), backup_fname)
-
-                logger.warn("Now, we will train with starting_epoch={} and backup old json to {}".format(
-                    self.trainer.loop.starting_epoch, backup_fname))
-                shutil.move(self._fname, backup_fname)
-
-        # in case we have something to log here.
-        self._trigger()
+        self._last_gs = -1
 
     def _trigger_step(self):
         # will do this in trigger_epoch
         if self.local_step != self.trainer.steps_per_epoch - 1:
-            self._trigger()
+            self._push()
 
     def _trigger_epoch(self):
-        self._trigger()
+        self._push()
 
-    @HIDE_DOC
     def process_scalar(self, name, val):
         self._stat_now[name] = val
 
-    def _trigger(self):
-        """
-        Add stats to json and dump to disk.
-        Note that this method is idempotent.
-        """
+    def _push(self):
+        """ Note that this method is idempotent"""
         if len(self._stat_now):
             self._stat_now['epoch_num'] = self.epoch_num
             self._stat_now['global_step'] = self.global_step
@@ -407,11 +294,10 @@ class JSONWriter(MonitorBase):
             logger.exception("Exception in JSONWriter._write_stat()!")
 
 
-class ScalarPrinter(MonitorBase):
+class ScalarPrinter(TrainingMonitor):
     """
     Print scalar data into terminal.
     """
-
     def __init__(self, enable_step=False, enable_epoch=True,
                  whitelist=None, blacklist=None):
         """
@@ -427,7 +313,7 @@ class ScalarPrinter(MonitorBase):
         def compile_regex(rs):
             if rs is None:
                 return None
-            rs = {re.compile(r) for r in rs}
+            rs = set([r if isinstance(r, re.RegexObject) else re.compile(r) for r in rs])
             return rs
 
         self._whitelist = compile_regex(whitelist)
@@ -437,32 +323,28 @@ class ScalarPrinter(MonitorBase):
 
         self._enable_step = enable_step
         self._enable_epoch = enable_epoch
-        self._dic = {}
 
-    # in case we have something to log here.
-    def _before_train(self):
-        self._trigger()
+    def _setup_graph(self):
+        self._dic = {}
 
     def _trigger_step(self):
         if self._enable_step:
             if self.local_step != self.trainer.steps_per_epoch - 1:
                 # not the last step
-                self._trigger()
+                self._print_stat()
             else:
                 if not self._enable_epoch:
-                    self._trigger()
+                    self._print_stat()
                 # otherwise, will print them together
 
     def _trigger_epoch(self):
         if self._enable_epoch:
-            self._trigger()
+            self._print_stat()
 
-    @HIDE_DOC
     def process_scalar(self, name, val):
         self._dic[name] = float(val)
 
-    def _trigger(self):
-        # Print stats here
+    def _print_stat(self):
         def match_regex_list(regexs, name):
             for r in regexs:
                 if r.search(name) is not None:
@@ -477,22 +359,20 @@ class ScalarPrinter(MonitorBase):
         self._dic = {}
 
 
-class ScalarHistory(MonitorBase):
+class ScalarHistory(TrainingMonitor):
     """
-    Only internally used by monitors.
+    Only used by monitors internally.
     """
-
-    def __init__(self):
+    def _setup_graph(self):
         self._dic = defaultdict(list)
 
-    @HIDE_DOC
     def process_scalar(self, name, val):
-        self._dic[name].append((self.global_step, float(val)))
+        self._dic[name].append(float(val))
 
     def get_latest(self, name):
         hist = self._dic[name]
         if len(hist) == 0:
-            raise KeyError("No available data for the key: {}".format(name))
+            raise KeyError("Invalid key: {}".format(name))
         else:
             return hist[-1]
 
@@ -500,7 +380,7 @@ class ScalarHistory(MonitorBase):
         return self._dic[name]
 
 
-class SendMonitorData(MonitorBase):
+class SendMonitorData(TrainingMonitor):
     """
     Execute a command with some specific scalar monitor data.
     This is useful for, e.g. building a custom statistics monitor.
@@ -530,15 +410,17 @@ class SendMonitorData(MonitorBase):
         self.names = names
         self.dic = {}
 
-    @HIDE_DOC
     def process_scalar(self, name, val):
         if name in self.names:
             self.dic[name] = val
 
     def _trigger_step(self):
-        self._trigger()
+        self._try_send()
 
-    def _trigger(self):
+    def _trigger_epoch(self):
+        self._try_send()
+
+    def _try_send(self):
         try:
             v = {k: self.dic[k] for k in self.names}
         except KeyError:
@@ -548,67 +430,3 @@ class SendMonitorData(MonitorBase):
         if ret != 0:
             logger.error("Command '{}' failed with ret={}!".format(cmd, ret))
         self.dic = {}
-
-
-class CometMLMonitor(MonitorBase):
-    """
-    Send scalar data and the graph to https://www.comet.ml.
-
-    Note:
-        1. comet_ml requires you to `import comet_ml` before importing tensorflow or tensorpack.
-        2. The "automatic output logging" feature of comet_ml will make the training progress bar appear to freeze.
-           Therefore the feature is disabled by default.
-    """
-    def __init__(self, experiment=None, tags=None, **kwargs):
-        """
-        Args:
-            experiment (comet_ml.Experiment): if provided, invalidate all other arguments
-            tags (list[str]): experiment tags
-            kwargs: arguments used to initialize :class:`comet_ml.Experiment`,
-                such as project name, API key, etc.
-                Refer to its documentation for details.
-        """
-        if experiment is not None:
-            self._exp = experiment
-            assert tags is None and len(kwargs) == 0
-        else:
-            from comet_ml import Experiment
-            kwargs.setdefault('log_code', True)  # though it's not functioning, git patch logging requires it
-            kwargs.setdefault('auto_output_logging', None)
-            self._exp = Experiment(**kwargs)
-            if tags is not None:
-                self._exp.add_tags(tags)
-
-        self._exp.set_code("Code logging is impossible ...")
-        self._exp.log_dependency('tensorpack', __git_version__)
-
-    @property
-    def experiment(self):
-        """
-        The :class:`comet_ml.Experiment` instance.
-        """
-        return self._exp
-
-    def _before_train(self):
-        self._exp.set_model_graph(tf.get_default_graph())
-
-    @HIDE_DOC
-    def process_scalar(self, name, val):
-        self._exp.log_metric(name, val, step=self.global_step)
-
-    @HIDE_DOC
-    def process_image(self, name, val):
-        self._exp.set_step(self.global_step)
-        for idx, v in enumerate(val):
-            log_name = "{}_step{}{}".format(
-                name,
-                self.global_step,
-                "_" + str(idx) if len(val) > 1 else "")
-
-            self._exp.log_image(v, image_format="jpeg", name=log_name, image_minmax=(0, 255))
-
-    def _after_train(self):
-        self._exp.end()
-
-    def _after_epoch(self):
-        self._exp.log_epoch_end(self.epoch_num)

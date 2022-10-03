@@ -1,16 +1,15 @@
-# -*- coding: utf-8 -*-
+# -*- coding: UTF-8 -*-
 # File: group.py
+# Author: Yuxin Wu <ppwwyyxx@gmail.com>
 
-
-import traceback
+import tensorflow as tf
 from contextlib import contextmanager
-from time import perf_counter as timer  # noqa
-from ..compat import tfv1 as tf
+import time
+import traceback
 
-from ..utils import logger
-from ..utils.utils import humanize_time_delta
 from .base import Callback
 from .hooks import CallbackToHook
+from ..utils import logger
 
 __all__ = ['Callbacks']
 
@@ -26,19 +25,18 @@ class CallbackTimeLogger(object):
 
     @contextmanager
     def timed_callback(self, name):
-        s = timer()
+        s = time.time()
         yield
-        self.add(name, timer() - s)
+        self.add(name, time.time() - s)
 
     def log(self):
-
         """ log the time of some heavy callbacks """
-        if self.tot < 2:
+        if self.tot < 3:
             return
         msgs = []
         for name, t in self.times:
             if t / self.tot > 0.3 and t > 1:
-                msgs.append(name + ": " + humanize_time_delta(t))
+                msgs.append("{}: {:.3f}sec".format(name, t))
         logger.info(
             "Callbacks took {:.3f} sec in total. {}".format(
                 self.tot, '; '.join(msgs)))
@@ -47,9 +45,7 @@ class CallbackTimeLogger(object):
 class Callbacks(Callback):
     """
     A container to hold all callbacks, and trigger them iteratively.
-
-    This is only used by the base trainer to run all the callbacks.
-    Users do not need to use this class.
+    Note that it does nothing to before_run/after_run.
     """
 
     def __init__(self, cbs):

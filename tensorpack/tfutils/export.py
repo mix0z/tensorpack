@@ -1,149 +1,137 @@
-# -*- coding: utf-8 -*-
+# -*- coding: UTF-8 -*-
 # File: export.py
+# Author: Patrick Wieschollek <mail@patwie.com>
 
 """
-A collection of functions to ease the process of exporting
-a model for production.
+This simplifies the process of exporting a model for TensorFlow serving.
 
 """
 
 import tensorflow as tf
-from tensorflow.python.framework import graph_util
-from tensorflow.python.platform import gfile
-from tensorflow.python.tools import optimize_for_inference_lib
-
-from ..compat import tfv1
-from ..input_source import PlaceholderInput
-from ..tfutils.common import get_tensors_by_names, get_tf_version_tuple
-from ..tfutils.tower import PredictTowerContext
 from ..utils import logger
+from ..graph_builder.model_desc import ModelDescBase
+from ..input_source import PlaceholderInput
+from ..tfutils import TowerContext, sessinit
 
-__all__ = ['ModelExporter']
+
+__all__ = ['ModelExport']
 
 
-class ModelExporter(object):
-    """Export models for inference."""
-
-    def __init__(self, config):
+class ModelExport(object):
+    """Wrapper for tf.saved_model"""
+    def __init__(self, model, input_names, output_names):
         """Initialise the export process.
 
-        Args:
-            config (PredictConfig): the config to use.
-                The graph will be built with the tower function defined by this `PredictConfig`.
-                Then the input / output names will be used to export models for inference.
-        """
-        super(ModelExporter, self).__init__()
-        self.config = config
+        Example:
 
-    def export_compact(self, filename, optimize=True, toco_compatible=False):
-        """Create a self-contained inference-only graph and write final graph (in pb format) to disk.
+            .. code-block:: python
+                from mnist_superresolution import Model
+                from tensorpack.tfutils import export
 
-        Args:
-            filename (str): path to the output graph
-            optimize (bool): whether to use TensorFlow's `optimize_for_inference`
-                to prune and optimize the graph. This does not work on all types of graphs.
-            toco_compatible (bool): See TensorFlow's
-                `optimize_for_inference
-                <https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/tools/optimize_for_inference.py>`_
-                for details. Only available after TF 1.8.
-        """
-        if toco_compatible:
-            assert optimize, "toco_compatible is only effective when optimize=True!"
-        self.graph = self.config._maybe_create_graph()
-        with self.graph.as_default():
-            input = PlaceholderInput()
-            input.setup(self.config.input_signature)
-            with PredictTowerContext(''):
-                self.config.tower_func(*input.get_input_tensors())
+                e = ModelExport(Model(), ['lowres'], ['prediction'])
+                e.export('train_log/mnist_superresolution/checkpoint', 'export/first_export')
 
-            input_tensors = get_tensors_by_names(self.config.input_names)
-            output_tensors = get_tensors_by_names(self.config.output_names)
+            Will generate a model for TensorFlow serving with input 'lowres' and
+            output 'prediction'. The model is in the directory 'export' and can be
+            loaded by
 
-            self.config.session_init._setup_graph()
-            # we cannot use "self.config.session_creator.create_session()" here since it finalizes the graph
-            sess = tfv1.Session(config=tfv1.ConfigProto(allow_soft_placement=True))
-            self.config.session_init._run_init(sess)
+            .. code-block:: python
 
-            dtypes = [n.dtype for n in input_tensors]
+                import tensorflow as tf
+                from tensorflow.python.saved_model import tag_constants
 
-            # freeze variables to constants
-            frozen_graph_def = graph_util.convert_variables_to_constants(
-                sess,
-                self.graph.as_graph_def(),
-                [n.name[:-2] for n in output_tensors],
-                variable_names_whitelist=None,
-                variable_names_blacklist=None)
+                export_dir = 'export/first_export'
+                with tf.Session(graph=tf.Graph(), config=tf.ConfigProto(allow_soft_placement=True)) as sess:
+                    tf.saved_model.loader.load(sess, [tag_constants.SERVING], export_dir)
 
-            # prune unused nodes from graph
-            if optimize:
-                toco_args = () if get_tf_version_tuple() < (1, 8) else (toco_compatible, )
-                frozen_graph_def = optimize_for_inference_lib.optimize_for_inference(
-                    frozen_graph_def,
-                    [n.name[:-2] for n in input_tensors],
-                    [n.name[:-2] for n in output_tensors],
-                    [dtype.as_datatype_enum for dtype in dtypes],
-                    *toco_args)
+                    prediction = tf.get_default_graph().get_tensor_by_name('prediction:0')
+                    lowres = tf.get_default_graph().get_tensor_by_name('lowres:0')
 
-            with gfile.FastGFile(filename, "wb") as f:
-                f.write(frozen_graph_def.SerializeToString())
-                logger.info("Output graph written to {}.".format(filename))
-
-    def export_serving(self, filename,
-                       tags=None,
-                       signature_name='prediction_pipeline'):
-        """
-        Converts a checkpoint and graph to a servable for TensorFlow Serving.
-        Use TF's `SavedModelBuilder` to export a trained model without tensorpack dependency.
+                    prediction = sess.run(prediction, {lowres: ...})[0]
 
         Args:
-            filename (str): path for export directory
-            tags (tuple): tuple of user specified tags. Defaults to just "SERVING".
-            signature_name (str): name of signature for prediction
+            model (ModelDescBase): the model description which should be exported
+            input_names (list(str)): names of input tensors
+            output_names (list(str)): names of output tensors
+        """
 
-        Note:
+        assert isinstance(input_names, list)
+        assert isinstance(output_names, list)
+        assert isinstance(model, ModelDescBase)
+
+        logger.info('[export] prepare new model export')
+        super(ModelExport, self).__init__()
+        self.model = model
+        self.input = PlaceholderInput()
+        self.input.setup(self.model.get_inputs_desc())
+        self.output_names = output_names
+        self.input_names = input_names
+
+    def export(self, checkpoint, export_path, version=1, tags=[tf.saved_model.tag_constants.SERVING],
+               signature_name='prediction_pipeline'):
+        """Use SavedModelBuilder to export a trained model without TensorPack depency.
+
+        Remarks:
             This produces
-
-            .. code-block:: none
-
                 variables/       # output from the vanilla Saver
                     variables.data-?????-of-?????
                     variables.index
-                saved_model.pb   # a `SavedModel` protobuf
+                saved_model.pb   # saved model in protcol buffer format
 
             Currently, we only support a single signature, which is the general PredictSignatureDef:
             https://github.com/tensorflow/serving/blob/master/tensorflow_serving/g3doc/signature_defs.md
+
+        Args:
+            checkpoint (str): path to checkpoint file
+            export_path (str): path for export directory
+            tags (list): list of user specified tags
+            signature_name (str): name of signature for prediction
         """
-        if tags is None:
-            tags = (tf.saved_model.SERVING if get_tf_version_tuple() >= (1, 12)
-                    else tf.saved_model.tag_constants.SERVING, )
+        logger.info('[export] build model for %s' % checkpoint)
+        with TowerContext('', is_training=False):
+            self.model.build_graph(self.input)
 
-        self.graph = self.config._maybe_create_graph()
-        with self.graph.as_default():
-            input = PlaceholderInput()
-            input.setup(self.config.input_signature)
-            with PredictTowerContext(''):
-                self.config.tower_func(*input.get_input_tensors())
+            self.sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
+            # load values from latest checkpoint
+            init = sessinit.SaverRestore(checkpoint)
+            self.sess.run(tf.global_variables_initializer())
+            init.init(self.sess)
 
-            input_tensors = get_tensors_by_names(self.config.input_names)
-            saved_model = tfv1.saved_model.utils
-            inputs_signatures = {t.name: saved_model.build_tensor_info(t) for t in input_tensors}
-            output_tensors = get_tensors_by_names(self.config.output_names)
-            outputs_signatures = {t.name: saved_model.build_tensor_info(t) for t in output_tensors}
+            self.inputs = []
+            for n in self.input_names:
+                tensor = tf.get_default_graph().get_tensor_by_name('%s:0' % n)
+                logger.info('[export] add input-tensor "%s"' % tensor.name)
+                self.inputs.append(tensor)
 
-            self.config.session_init._setup_graph()
-            # we cannot use "self.config.session_creator.create_session()" here since it finalizes the graph
-            sess = tfv1.Session(config=tfv1.ConfigProto(allow_soft_placement=True))
-            self.config.session_init._run_init(sess)
+            self.outputs = []
+            for n in self.output_names:
+                tensor = tf.get_default_graph().get_tensor_by_name('%s:0' % n)
+                logger.info('[export] add output-tensor "%s"' % tensor.name)
+                self.outputs.append(tensor)
 
-            builder = tfv1.saved_model.builder.SavedModelBuilder(filename)
+            logger.info('[export] exporting trained model to %s' % export_path)
+            builder = tf.saved_model.builder.SavedModelBuilder(export_path)
 
-            prediction_signature = tfv1.saved_model.signature_def_utils.build_signature_def(
-                inputs=inputs_signatures,
-                outputs=outputs_signatures,
-                method_name=tfv1.saved_model.signature_constants.PREDICT_METHOD_NAME)
+            logger.info('[export] build signatures')
+            # build inputs
+            inputs_signature = dict()
+            for n, v in zip(self.input_names, self.inputs):
+                logger.info('[export] add input signature: %s' % v)
+                inputs_signature[n] = tf.saved_model.utils.build_tensor_info(v)
+
+            outputs_signature = dict()
+            for n, v in zip(self.output_names, self.outputs):
+                logger.info('[export] add output signature: %s' % v)
+                outputs_signature[n] = tf.saved_model.utils.build_tensor_info(v)
+
+            prediction_signature = tf.saved_model.signature_def_utils.build_signature_def(
+                inputs=inputs_signature,
+                outputs=outputs_signature,
+                method_name=tf.saved_model.signature_constants.PREDICT_METHOD_NAME)
+
+            # legacy_init_op = tf.group(tf.tables_initializer(), name='legacy_init_op')
 
             builder.add_meta_graph_and_variables(
-                sess, list(tags),
+                self.sess, tags,
                 signature_def_map={signature_name: prediction_signature})
             builder.save()
-            logger.info("SavedModel created at {}.".format(filename))

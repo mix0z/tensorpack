@@ -1,8 +1,6 @@
 tensorpack.models package
 =========================
 
-Relevant tutorials: :doc:`../tutorial/symbolic`.
-
 .. container:: custom-index
 
     .. raw:: html

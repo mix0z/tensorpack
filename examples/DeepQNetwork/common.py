@@ -1,27 +1,27 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: common.py
-# Author: Yuxin Wu
-
-import multiprocessing
-import numpy as np
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 import random
 import time
+import multiprocessing
+from tqdm import tqdm
 from six.moves import queue
 
-from tensorpack.callbacks import Callback
-from tensorpack.utils import logger, get_tqdm
-from tensorpack.utils.concurrency import ShareSessionThread, StoppableThread
+from tensorpack.utils.concurrency import StoppableThread, ShareSessionThread
+from tensorpack.callbacks import Triggerable
+from tensorpack.utils import logger
 from tensorpack.utils.stats import StatCounter
+from tensorpack.utils.utils import get_tqdm_kwargs
 
 
 def play_one_episode(env, func, render=False):
     def predict(s):
         """
-        Map from observation to action, with 0.01 greedy.
+        Map from observation to action, with 0.001 greedy.
         """
-        s = np.expand_dims(s, 0)  # batch
-        act = func(s)[0][0].argmax()
-        if random.random() < 0.01:
+        act = func([[s]])[0][0].argmax()
+        if random.random() < 0.001:
             spc = env.action_space
             act = spc.sample()
         return act
@@ -31,6 +31,8 @@ def play_one_episode(env, func, render=False):
     while True:
         act = predict(ob)
         ob, r, isOver, info = env.step(act)
+        if render:
+            env.render()
         sum_r += r
         if isOver:
             return sum_r
@@ -43,7 +45,7 @@ def play_n_episodes(player, predfunc, nr, render=False):
         print("{}/{}, score={}".format(k, nr, score))
 
 
-def eval_with_funcs(predictors, nr_eval, get_player_fn, verbose=False):
+def eval_with_funcs(predictors, nr_eval, get_player_fn):
     """
     Args:
         predictors ([PredictorBase])
@@ -65,6 +67,7 @@ def eval_with_funcs(predictors, nr_eval, get_player_fn, verbose=False):
                 while not self.stopped():
                     try:
                         score = play_one_episode(player, self.func)
+                        # print("Score, ", score)
                     except RuntimeError:
                         return
                     self.queue_put_stoppable(self.q, score)
@@ -76,43 +79,38 @@ def eval_with_funcs(predictors, nr_eval, get_player_fn, verbose=False):
         k.start()
         time.sleep(0.1)  # avoid simulator bugs
     stat = StatCounter()
-
-    def fetch():
-        r = q.get()
-        stat.feed(r)
-        if verbose:
-            logger.info("Score: {}".format(r))
-
-    for _ in get_tqdm(range(nr_eval)):
-        fetch()
-    # waiting is necessary, otherwise the estimated mean score is biased
-    logger.info("Waiting for all the workers to finish the last run...")
-    for k in threads:
-        k.stop()
-    for k in threads:
-        k.join()
-    while q.qsize():
-        fetch()
-
-    if stat.count > 0:
-        return (stat.average, stat.max)
-    return (0, 0)
+    try:
+        for _ in tqdm(range(nr_eval), **get_tqdm_kwargs()):
+            r = q.get()
+            stat.feed(r)
+        logger.info("Waiting for all the workers to finish the last run...")
+        for k in threads:
+            k.stop()
+        for k in threads:
+            k.join()
+        while q.qsize():
+            r = q.get()
+            stat.feed(r)
+    except:
+        logger.exception("Eval")
+    finally:
+        if stat.count > 0:
+            return (stat.average, stat.max)
+        return (0, 0)
 
 
 def eval_model_multithread(pred, nr_eval, get_player_fn):
     """
     Args:
-        pred (OfflinePredictor): state -> [#action]
+        pred (OfflinePredictor): state -> Qvalue
     """
     NR_PROC = min(multiprocessing.cpu_count() // 2, 8)
     with pred.sess.as_default():
-        mean, max = eval_with_funcs(
-            [pred] * NR_PROC, nr_eval,
-            get_player_fn, verbose=True)
+        mean, max = eval_with_funcs([pred] * NR_PROC, nr_eval, get_player_fn)
     logger.info("Average Score: {}; Max Score: {}".format(mean, max))
 
 
-class Evaluator(Callback):
+class Evaluator(Triggerable):
     def __init__(self, nr_eval, input_names, output_names, get_player_fn):
         self.eval_episode = nr_eval
         self.input_names = input_names

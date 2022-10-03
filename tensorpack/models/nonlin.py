@@ -1,16 +1,14 @@
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python
+# -*- coding: UTF-8 -*-
 # File: nonlin.py
-
+# Author: Yuxin Wu <ppwwyyxx@gmail.com>
 
 import tensorflow as tf
 
-from ..utils.develop import log_deprecated
-from ..compat import tfv1
+from .common import layer_register, VariableHolder
 from .batch_norm import BatchNorm
-from .common import VariableHolder, layer_register
-from .utils import disable_autograph
 
-__all__ = ['Maxout', 'PReLU', 'BNReLU']
+__all__ = ['Maxout', 'PReLU', 'LeakyReLU', 'BNReLU']
 
 
 @layer_register(use_scope=None)
@@ -38,8 +36,7 @@ def Maxout(x, num_unit):
 
 
 @layer_register()
-@disable_autograph()
-def PReLU(x, init=0.001, name=None):
+def PReLU(x, init=0.001, name='output'):
     """
     Parameterized ReLU as in the paper `Delving Deep into Rectifiers: Surpassing
     Human-Level Performance on ImageNet Classification
@@ -48,35 +45,40 @@ def PReLU(x, init=0.001, name=None):
     Args:
         x (tf.Tensor): input
         init (float): initial value for the learnable slope.
-        name (str): deprecated argument. Don't use
+        name (str): name of the output.
 
     Variable Names:
 
     * ``alpha``: learnable slope.
     """
-    if name is not None:
-        log_deprecated("PReLU(name=...)", "The output tensor will be named `output`.")
-    init = tfv1.constant_initializer(init)
-    alpha = tfv1.get_variable('alpha', [], initializer=init)
+    init = tf.constant_initializer(init)
+    alpha = tf.get_variable('alpha', [], initializer=init)
     x = ((1 + alpha) * x + (1 - alpha) * tf.abs(x))
-    ret = tf.multiply(x, 0.5, name=name or None)
+    ret = tf.multiply(x, 0.5, name=name)
 
     ret.variables = VariableHolder(alpha=alpha)
     return ret
 
 
 @layer_register(use_scope=None)
+def LeakyReLU(x, alpha, name='output'):
+    """
+    Leaky ReLU as in paper `Rectifier Nonlinearities Improve Neural Network Acoustic
+    Models
+    <http://ai.stanford.edu/~amaas/papers/relu_hybrid_icml2013_final.pdf>`_.
+
+    Args:
+        x (tf.Tensor): input
+        alpha (float): the slope.
+    """
+    return tf.maximum(x, alpha * x, name=name)
+
+
+@layer_register(use_scope=None)
 def BNReLU(x, name=None):
     """
     A shorthand of BatchNormalization + ReLU.
-
-    Args:
-        x (tf.Tensor): the input
-        name: deprecated, don't use.
     """
-    if name is not None:
-        log_deprecated("BNReLU(name=...)", "The output tensor will be named `output`.")
-
     x = BatchNorm('bn', x)
     x = tf.nn.relu(x, name=name)
     return x

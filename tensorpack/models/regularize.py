@@ -1,33 +1,25 @@
-# -*- coding: utf-8 -*-
+# -*- coding: UTF-8 -*-
 # File: regularize.py
+# Author: Yuxin Wu <ppwwyyxx@gmail.com>
 
-
-import re
 import tensorflow as tf
+import re
 
-from ..compat import tfv1
-from ..tfutils.common import get_tf_version_tuple
-from ..tfutils.tower import get_current_tower_context
 from ..utils import logger
 from ..utils.argtools import graph_memoized
+from ..tfutils.tower import get_current_tower_context
 from .common import layer_register
 
-__all__ = ['regularize_cost', 'regularize_cost_from_collection',
-           'l2_regularizer', 'l1_regularizer', 'Dropout']
+__all__ = ['regularize_cost', 'l2_regularizer', 'l1_regularizer', 'Dropout']
 
 
 @graph_memoized
-def _log_once(msg):
-    logger.info(msg)
+def _log_regularizer(name):
+    logger.info("Apply regularizer for {}".format(name))
 
 
-if get_tf_version_tuple() <= (1, 12):
-    l2_regularizer = tf.contrib.layers.l2_regularizer  # deprecated
-    l1_regularizer = tf.contrib.layers.l1_regularizer  # deprecated
-else:
-    # oh these little dirty details
-    l2_regularizer = lambda x: tf.keras.regularizers.l2(x * 0.5)  # noqa
-    l1_regularizer = tf.keras.regularizers.l1
+l2_regularizer = tf.contrib.layers.l2_regularizer
+l1_regularizer = tf.contrib.layers.l1_regularizer
 
 
 def regularize_cost(regex, func, name='regularize_cost'):
@@ -36,51 +28,43 @@ def regularize_cost(regex, func, name='regularize_cost'):
     the matched variables (only print once in multi-tower training).
     In replicated mode, it will only regularize variables within the current tower.
 
-    If called under a TowerContext with `is_training==False`, this function returns a zero constant tensor.
-
     Args:
         regex (str): a regex to match variable names, e.g. "conv.*/W"
         func: the regularization function, which takes a tensor and returns a scalar tensor.
-            E.g., ``tf.nn.l2_loss, tf.contrib.layers.l1_regularizer(0.001)``.
+            E.g., ``tf.contrib.layers.l2_regularizer``.
 
     Returns:
-        tf.Tensor: a scalar, the total regularization cost.
+        tf.Tensor: the total regularization cost.
 
     Example:
         .. code-block:: python
 
             cost = cost + regularize_cost("fc.*/W", l2_regularizer(1e-5))
     """
-    assert len(regex)
     ctx = get_current_tower_context()
     if not ctx.is_training:
         # Currently cannot build the wd_cost correctly at inference,
         # because ths vs_name used in inference can be '', therefore the
         # variable filter will fail
         return tf.constant(0, dtype=tf.float32, name='empty_' + name)
+    params = tf.trainable_variables()
 
-    # If vars are shared, regularize all of them
+    # If vars are shared, use all of them
     # If vars are replicated, only regularize those in the current tower
-    if ctx.has_own_variables:
-        params = ctx.get_collection_in_tower(tfv1.GraphKeys.TRAINABLE_VARIABLES)
-    else:
-        params = tfv1.trainable_variables()
+    params = ctx.filter_vars_by_vs_name(params)
 
-    names = []
+    G = tf.get_default_graph()
 
-    with tfv1.name_scope(name + '_internals'):
+    to_regularize = []
+
+    with tf.name_scope('regularize_cost'):
         costs = []
         for p in params:
             para_name = p.op.name
             if re.search(regex, para_name):
-                regloss = func(p)
-                assert regloss.dtype.is_floating, regloss
-                # Some variables may not be fp32, but it should
-                # be fine to assume regularization in fp32
-                if regloss.dtype != tf.float32:
-                    regloss = tf.cast(regloss, tf.float32)
-                costs.append(regloss)
-                names.append(p.name)
+                with G.colocate_with(p):
+                    costs.append(func(p))
+                to_regularize.append(p.name)
         if not costs:
             return tf.constant(0, dtype=tf.float32, name='empty_' + name)
 
@@ -93,9 +77,9 @@ def regularize_cost(regex, func, name='regularize_cost'):
             if name.startswith(prefix):
                 return name[prefixlen:]
             return name
-        names = list(map(f, names))
-    logger.info("regularize_cost() found {} variables to regularize.".format(len(names)))
-    _log_once("The following tensors will be regularized: {}".format(', '.join(names)))
+        to_regularize = list(map(f, to_regularize))
+    to_print = ', '.join(to_regularize)
+    _log_regularizer(to_print)
 
     return tf.add_n(costs, name=name)
 
@@ -103,73 +87,45 @@ def regularize_cost(regex, func, name='regularize_cost'):
 def regularize_cost_from_collection(name='regularize_cost'):
     """
     Get the cost from the regularizers in ``tf.GraphKeys.REGULARIZATION_LOSSES``.
-    If in replicated mode, will only regularize variables created within the current tower.
-
-    Args:
-        name (str): the name of the returned tensor
+    In replicated mode, will only regularize variables within the current tower.
 
     Returns:
-        tf.Tensor: a scalar, the total regularization cost.
+        a scalar tensor, the regularization loss, or None
     """
+    regularization_losses = set(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
     ctx = get_current_tower_context()
     if not ctx.is_training:
-        # TODO Currently cannot build the wd_cost correctly at inference,
+        # Currently cannot build the wd_cost correctly at inference,
         # because ths vs_name used in inference can be '', therefore the
         # variable filter will fail
-        return tf.constant(0, dtype=tf.float32, name='empty_' + name)
+        return None
 
-    # NOTE: this collection doesn't always grow with towers.
-    # It only grows with actual variable creation, but not get_variable call.
-    if ctx.has_own_variables:   # be careful of the first tower (name='')
-        losses = ctx.get_collection_in_tower(tfv1.GraphKeys.REGULARIZATION_LOSSES)
-    else:
-        losses = tfv1.get_collection(tfv1.GraphKeys.REGULARIZATION_LOSSES)
-    if len(losses) > 0:
-        logger.info("regularize_cost_from_collection() found {} regularizers "
-                    "in REGULARIZATION_LOSSES collection.".format(len(losses)))
-
-        def maploss(l):
-            assert l.dtype.is_floating, l
-            if l.dtype != tf.float32:
-                l = tf.cast(l, tf.float32)
-            return l
-
-        losses = [maploss(l) for l in losses]
-        reg_loss = tf.add_n(losses, name=name)
+    if len(regularization_losses) > 0:
+        # NOTE: this collection doesn't grow with towers.
+        # It is only added with variables that are newly created.
+        if ctx.has_own_variables:   # be careful of the first tower (name='')
+            regularization_losses = ctx.filter_vars_by_vs_name(regularization_losses)
+        logger.info("Add REGULARIZATION_LOSSES of {} tensors on the total cost.".format(len(regularization_losses)))
+        reg_loss = tf.add_n(list(regularization_losses), name=name)
         return reg_loss
     else:
-        return tf.constant(0, dtype=tf.float32, name='empty_' + name)
+        return None
 
 
 @layer_register(use_scope=None)
-def Dropout(x, *args, **kwargs):
+def Dropout(x, keep_prob=0.5, is_training=None, noise_shape=None):
     """
-    Same as `tf.layers.dropout`.
-    However, for historical reasons, the first positional argument is
-    interpreted as keep_prob rather than drop_prob.
-    Explicitly use `rate=` keyword arguments to ensure things are consistent.
+    Dropout layer as in the paper `Dropout: a Simple Way to Prevent
+    Neural Networks from Overfitting <http://dl.acm.org/citation.cfm?id=2670313>`_.
+
+    Args:
+        keep_prob (float): the probability that each element is kept. It is only used
+            when is_training=True.
+        is_training (bool): If None, will use the current :class:`tensorpack.tfutils.TowerContext`
+            to figure out.
+        noise_shape: same as `tf.nn.dropout`.
     """
-    if 'is_training' in kwargs:
-        kwargs['training'] = kwargs.pop('is_training')
-    if len(args) > 0:
-        if args[0] != 0.5:
-            logger.warn(
-                "The first positional argument to tensorpack.Dropout is the probability to keep, rather than to drop. "
-                "This is different from the rate argument in tf.layers.Dropout due to historical reasons. "
-                "To mimic tf.layers.Dropout, explicitly use keyword argument 'rate' instead")
-        rate = 1 - args[0]
-    elif 'keep_prob' in kwargs:
-        assert 'rate' not in kwargs, "Cannot set both keep_prob and rate!"
-        rate = 1 - kwargs.pop('keep_prob')
-    elif 'rate' in kwargs:
-        rate = kwargs.pop('rate')
-    else:
-        rate = 0.5
-
-    if kwargs.get('training', None) is None:
-        kwargs['training'] = get_current_tower_context().is_training
-
-    if get_tf_version_tuple() <= (1, 12):
-        return tf.layers.dropout(x, rate=rate, **kwargs)
-    else:
-        return tf.nn.dropout(x, rate=rate if kwargs['training'] else 0.)
+    if is_training is None:
+        is_training = get_current_tower_context().is_training
+    return tf.layers.dropout(
+        x, rate=1 - keep_prob, noise_shape=noise_shape, training=is_training)

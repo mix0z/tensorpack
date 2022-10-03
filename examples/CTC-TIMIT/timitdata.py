@@ -1,17 +1,18 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: timitdata.py
-# Author: Yuxin Wu
-
-import numpy as np
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
 from tensorpack import ProxyDataFlow
+import numpy as np
+from six.moves import range
 
 __all__ = ['TIMITBatch']
 
 
 def batch_feature(feats):
     # pad to the longest in the batch
-    maxlen = max(k.shape[0] for k in feats)
+    maxlen = max([k.shape[0] for k in feats])
     bsize = len(feats)
     ret = np.zeros((bsize, maxlen, feats[0].shape[1]))
     for idx, feat in enumerate(feats):
@@ -20,7 +21,7 @@ def batch_feature(feats):
 
 
 def sparse_label(labels):
-    maxlen = max(k.shape[0] for k in labels)
+    maxlen = max([k.shape[0] for k in labels])
     shape = [len(labels), maxlen]   # bxt
     indices = []
     values = []
@@ -39,15 +40,15 @@ class TIMITBatch(ProxyDataFlow):
         self.batch = batch
         self.ds = ds
 
-    def __len__(self):
-        return len(self.ds) // self.batch
+    def size(self):
+        return self.ds.size() // self.batch
 
-    def __iter__(self):
-        itr = self.ds.__iter__()
-        for _ in range(self.__len__()):
+    def get_data(self):
+        itr = self.ds.get_data()
+        for _ in range(self.size()):
             feats = []
             labs = []
-            for _ in range(self.batch):
+            for b in range(self.batch):
                 feat, lab = next(itr)
                 feats.append(feat)
                 labs.append(lab)

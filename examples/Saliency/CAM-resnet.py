@@ -1,55 +1,72 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
+# -*- coding: UTF-8 -*-
 # File: CAM-resnet.py
 
+import cv2
+import sys
 import argparse
-import multiprocessing
 import numpy as np
 import os
-import sys
-import cv2
-import tensorflow as tf
+import multiprocessing
 
+import tensorflow as tf
+from tensorflow.contrib.layers import variance_scaling_initializer
 from tensorpack import *
 from tensorpack.dataflow import dataset
-from tensorpack.tfutils import gradproc, optimizer
+from tensorpack.tfutils import optimizer
+from tensorpack.tfutils.symbolic_functions import *
 from tensorpack.tfutils.summary import *
+from tensorpack.utils.gpu import get_nr_gpu
 from tensorpack.utils import viz
-from tensorpack.utils.gpu import get_num_gpu
 
-from imagenet_utils import ImageNetModel, fbresnet_augmentor
-from resnet_model import preresnet_basicblock, preresnet_group
+from imagenet_resnet_utils import (
+    fbresnet_augmentor, preresnet_basicblock, preresnet_group,
+    image_preprocess, compute_loss_and_error)
+
 
 TOTAL_BATCH_SIZE = 256
+INPUT_SHAPE = 224
 DEPTH = None
 
 
-class Model(ImageNetModel):
+class Model(ModelDesc):
+    def _get_inputs(self):
+        return [InputDesc(tf.uint8, [None, INPUT_SHAPE, INPUT_SHAPE, 3], 'input'),
+                InputDesc(tf.int32, [None], 'label')]
 
-    def get_logits(self, image):
+    def _build_graph(self, inputs):
+        image, label = inputs
+        image = image_preprocess(image, bgr=True)
+        image = tf.transpose(image, [0, 3, 1, 2])
+
         cfg = {
             18: ([2, 2, 2, 2], preresnet_basicblock),
             34: ([3, 4, 6, 3], preresnet_basicblock),
         }
         defs, block_func = cfg[DEPTH]
 
-        with argscope(Conv2D, use_bias=False,
-                      kernel_initializer=tf.variance_scaling_initializer(scale=2.0, mode='fan_out')), \
-                argscope([Conv2D, MaxPooling, GlobalAvgPooling, BatchNorm], data_format='channels_first'):
+        with argscope(Conv2D, nl=tf.identity, use_bias=False,
+                      W_init=variance_scaling_initializer(mode='FAN_OUT')), \
+                argscope([Conv2D, MaxPooling, GlobalAvgPooling, BatchNorm], data_format='NCHW'):
             convmaps = (LinearWrap(image)
-                        .Conv2D('conv0', 64, 7, strides=2, activation=BNReLU)
-                        .MaxPooling('pool0', 3, strides=2, padding='SAME')
-                        .apply2(preresnet_group, 'group0', block_func, 64, defs[0], 1)
-                        .apply2(preresnet_group, 'group1', block_func, 128, defs[1], 2)
-                        .apply2(preresnet_group, 'group2', block_func, 256, defs[2], 2)
-                        .apply2(preresnet_group, 'group3new', block_func, 512, defs[3], 1)())
+                        .Conv2D('conv0', 64, 7, stride=2, nl=BNReLU)
+                        .MaxPooling('pool0', shape=3, stride=2, padding='SAME')
+                        .apply(preresnet_group, 'group0', block_func, 64, defs[0], 1)
+                        .apply(preresnet_group, 'group1', block_func, 128, defs[1], 2)
+                        .apply(preresnet_group, 'group2', block_func, 256, defs[2], 2)
+                        .apply(preresnet_group, 'group3new', block_func, 512, defs[3], 1)())
             print(convmaps)
-            convmaps = GlobalAvgPooling('gap', convmaps)
-            logits = FullyConnected('linearnew', convmaps, 1000)
-        return logits
+            logits = (LinearWrap(convmaps)
+                      .GlobalAvgPooling('gap')
+                      .FullyConnected('linearnew', 1000, nl=tf.identity)())
 
-    def optimizer(self):
-        lr = tf.get_variable('learning_rate', initializer=0.1, trainable=False)
+        loss = compute_loss_and_error(logits, label)
+        wd_cost = regularize_cost('.*/W', l2_regularizer(1e-4), name='l2_regularize_loss')
+        add_moving_summary(loss, wd_cost)
+        self.cost = tf.add_n([loss, wd_cost], name='cost')
+
+    def _get_optimizer(self):
+        lr = get_scalar_var('learning_rate', 0.1, summary=True)
         opt = tf.train.MomentumOptimizer(lr, 0.9, use_nesterov=True)
         gradprocs = [gradproc.ScaleGradient(
             [('conv0.*', 0.1), ('group[0-2].*', 0.1)])]
@@ -67,12 +84,16 @@ def get_data(train_or_test):
 
     ds = AugmentImageComponent(ds, augmentors, copy=False)
     if isTrain:
-        ds = MultiProcessRunnerZMQ(ds, min(25, multiprocessing.cpu_count()))
+        ds = PrefetchDataZMQ(ds, min(25, multiprocessing.cpu_count()))
     ds = BatchData(ds, BATCH_SIZE, remainder=not isTrain)
     return ds
 
 
 def get_config():
+    nr_gpu = get_nr_gpu()
+    global BATCH_SIZE
+    BATCH_SIZE = TOTAL_BATCH_SIZE // nr_gpu
+
     dataset_train = get_data('train')
     dataset_val = get_data('val')
 
@@ -90,6 +111,7 @@ def get_config():
         ],
         steps_per_epoch=5000,
         max_epoch=105,
+        nr_tower=nr_gpu
     )
 
 
@@ -97,7 +119,7 @@ def viz_cam(model_file, data_dir):
     ds = get_data('val')
     pred_config = PredictConfig(
         model=Model(),
-        session_init=SmartInit(model_file),
+        session_init=get_model_loader(model_file),
         input_names=['input', 'label'],
         output_names=['wrong-top1', 'group3new/bnlast/Relu', 'linearnew/W'],
         return_input=True
@@ -134,15 +156,12 @@ if __name__ == '__main__':
     parser.add_argument('--data', help='ILSVRC dataset dir')
     parser.add_argument('--depth', type=int, default=18)
     parser.add_argument('--load', help='load model')
-    parser.add_argument('--cam', action='store_true', help='run visualization')
+    parser.add_argument('--cam', action='store_true')
     args = parser.parse_args()
 
     DEPTH = args.depth
     if args.gpu:
         os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
-
-    num_gpu = get_num_gpu()
-    BATCH_SIZE = TOTAL_BATCH_SIZE // num_gpu
 
     if args.cam:
         BATCH_SIZE = 128    # something that can run on one gpu
@@ -151,5 +170,6 @@ if __name__ == '__main__':
 
     logger.auto_set_dir()
     config = get_config()
-    config.session_init = SmartInit(args.load)
-    launch_train_with_config(config, SyncMultiGPUTrainerParameterServer(num_gpu))
+    if args.load:
+        config.session_init = get_model_loader(args.load)
+    SyncMultiGPUTrainerParameterServer(config).train()

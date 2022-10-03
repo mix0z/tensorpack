@@ -1,6 +1,6 @@
-# -*- coding: utf-8 -*-
+# -*- coding: UTF-8 -*-
 # File: stats.py
-
+# Author: Yuxin Wu <ppwwyyxx@gmail.com>
 import numpy as np
 
 __all__ = ['StatCounter', 'BinaryStatistics', 'RatioCounter', 'Accuracy',
@@ -47,12 +47,6 @@ class StatCounter(object):
         assert len(self._values)
         return min(self._values)
 
-    def samples(self):
-        """
-        Returns all samples.
-        """
-        return self._values
-
 
 class RatioCounter(object):
     """ A counter to count ratio of something. """
@@ -64,14 +58,14 @@ class RatioCounter(object):
         self._tot = 0
         self._cnt = 0
 
-    def feed(self, count, total=1):
+    def feed(self, cnt, tot=1):
         """
         Args:
             cnt(int): the count of some event of interest.
             tot(int): the total number of events.
         """
-        self._tot += total
-        self._cnt += count
+        self._tot += tot
+        self._cnt += cnt
 
     @property
     def ratio(self):
@@ -80,20 +74,12 @@ class RatioCounter(object):
         return self._cnt * 1.0 / self._tot
 
     @property
-    def total(self):
-        """
-        Returns:
-            int: the total
-        """
-        return self._tot
-
-    @property
     def count(self):
         """
         Returns:
             int: the total
         """
-        return self._cnt
+        return self._tot
 
 
 class Accuracy(RatioCounter):

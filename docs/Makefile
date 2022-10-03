@@ -17,8 +17,7 @@ help:
 	@$(SPHINXBUILD) -M help "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
 
 docset: html
-	convert _static/favicon.ico ./favicon.png
-	doc2dash -d ./ -n $(SPHINXPROJ) --enable-js --force $(BUILDDIR)/html/ -I tutorial/index.html -i favicon.png
+	doc2dash -d ./ -n $(SPHINXPROJ) --enable-js --force $(BUILDDIR)/html/ -I tutorial/index.html
 	tar czvf tensorpack.docset.tgz tensorpack.docset
 
 # Catch-all target: route all unknown targets to Sphinx using the new

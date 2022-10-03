@@ -1,19 +1,17 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: bsds500.py
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
-
+import os
 import glob
 import numpy as np
-import os
 
 from ...utils.fs import download, get_dataset_path
 from ..base import RNGDataFlow
 
 __all__ = ['BSDS500']
-
-
 DATA_URL = "http://www.eecs.berkeley.edu/Research/Projects/CS/vision/grouping/BSR/BSR_bsds500.tgz"
-DATA_SIZE = 70763455
 IMG_W, IMG_H = 481, 321
 
 
@@ -38,7 +36,7 @@ class BSDS500(RNGDataFlow):
         if data_dir is None:
             data_dir = get_dataset_path('bsds500_data')
         if not os.path.isdir(os.path.join(data_dir, 'BSR')):
-            download(DATA_URL, data_dir, expect_size=DATA_SIZE)
+            download(DATA_URL, data_dir)
             filename = DATA_URL.split('/')[-1]
             filepath = os.path.join(data_dir, filename)
             import tarfile
@@ -78,10 +76,10 @@ class BSDS500(RNGDataFlow):
             self.data[idx] = im
             self.label[idx] = gt
 
-    def __len__(self):
+    def size(self):
         return self.data.shape[0]
 
-    def __iter__(self):
+    def get_data(self):
         idxs = np.arange(self.data.shape[0])
         if self.shuffle:
             self.rng.shuffle(idxs)
@@ -98,7 +96,6 @@ except ImportError:
 
 if __name__ == '__main__':
     a = BSDS500('val')
-    a.reset_state()
-    for k in a:
+    for k in a.get_data():
         cv2.imshow("haha", k[1].astype('uint8') * 255)
         cv2.waitKey(1000)

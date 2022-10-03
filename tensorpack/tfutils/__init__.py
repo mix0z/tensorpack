@@ -1,20 +1,11 @@
-#  -*- coding: utf-8 -*-
+#  -*- coding: UTF-8 -*-
 #  File: __init__.py
+#  Author: Yuxin Wu <ppwwyyxx@gmail.com>
 
+from pkgutil import iter_modules
+import os
 
-from .tower import get_current_tower_context, TowerContext
-
-# https://github.com/celery/kombu/blob/7d13f9b95d0b50c94393b962e6def928511bfda6/kombu/__init__.py#L34-L36
-STATICA_HACK = True
-globals()['kcah_acitats'[::-1].upper()] = False
-if STATICA_HACK:
-    from .common import *
-    from .sessinit import *
-    from .argscope import *
-
-
-# don't want to include everything from .tower
-__all__ = ['get_current_tower_context', 'TowerContext']
+__all__ = []
 
 
 def _global_import(name):
@@ -26,24 +17,23 @@ def _global_import(name):
             __all__.append(k)
 
 
-_TO_IMPORT = frozenset([
+_TO_IMPORT = set([
     'common',
     'sessinit',
     'argscope',
+    'tower',
 ])
 
-for module_name in _TO_IMPORT:
-    _global_import(module_name)
-
-"""
-TODO remove this line in the future.
-Better to keep submodule names (sesscreate, varmanip, etc) out of __all__,
-so that these names will be invisible under `tensorpack.` namespace.
-
-To use these utilities, users are expected to import them explicitly, e.g.:
-
-import tensorpack.tfutils.sessinit as sessinit
-"""
+_CURR_DIR = os.path.dirname(__file__)
+for _, module_name, _ in iter_modules(
+        [_CURR_DIR]):
+    srcpath = os.path.join(_CURR_DIR, module_name + '.py')
+    if not os.path.isfile(srcpath):
+        continue
+    if module_name.startswith('_'):
+        continue
+    if module_name in _TO_IMPORT:
+        _global_import(module_name)  # import the content to tfutils.*
 __all__.extend(['sessinit', 'summary', 'optimizer',
-                'sesscreate', 'gradproc', 'varreplace',
-                'tower'])
+                'sesscreate', 'gradproc', 'varreplace', 'symbolic_functions',
+                'distributed'])

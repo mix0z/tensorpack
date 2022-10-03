@@ -1,22 +1,29 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: atari.py
-# Author: Yuxin Wu
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
 import numpy as np
+import time
 import os
-import threading
 import cv2
-import gym
+import threading
 import six
-from ale_py import ALEInterface, Action, LoggerMode
-from gym import spaces
-
-from tensorpack.utils import logger, execute_only_once, get_rng
+from six.moves import range
+from tensorpack.utils import logger
+from tensorpack.utils.utils import get_rng, execute_only_once
 from tensorpack.utils.fs import get_dataset_path
+from tensorpack.utils.stats import StatCounter
+
+import gym
+from gym import spaces
+from gym.envs.atari.atari_env import ACTION_MEANING
+
+from ale_python_interface import ALEInterface
 
 __all__ = ['AtariPlayer']
 
-ROM_URL = "https://github.com/openai/atari-py/tree/gdb/atari_py/atari_roms"
+ROM_URL = "https://github.com/openai/atari-py/tree/master/atari_py/atari_roms"
 _ALE_LOCK = threading.Lock()
 
 
@@ -31,8 +38,7 @@ class AtariPlayer(gym.Env):
 
     def __init__(self, rom_file, viz=0,
                  frame_skip=4, nullop_start=30,
-                 live_lost_as_eoe=True, max_num_frames=0,
-                 grayscale=True):
+                 live_lost_as_eoe=True, max_num_frames=0):
         """
         Args:
             rom_file: path to the rom
@@ -44,16 +50,15 @@ class AtariPlayer(gym.Env):
             nullop_start: start with random number of null ops.
             live_losts_as_eoe: consider lost of lives as end of episode. Useful for training.
             max_num_frames: maximum number of frames per episode.
-            grayscale (bool): if True, return 2D image. Otherwise return HWC image.
         """
         super(AtariPlayer, self).__init__()
         if not os.path.isfile(rom_file) and '/' not in rom_file:
             rom_file = get_dataset_path('atari_rom', rom_file)
         assert os.path.isfile(rom_file), \
-            "ROM {} not found. Please download at {}".format(rom_file, ROM_URL)
+            "rom {} not found. Please download at {}".format(rom_file, ROM_URL)
 
         try:
-            ALEInterface.setLoggerMode(LoggerMode.Error)
+            ALEInterface.setLoggerMode(ALEInterface.Logger.Error)
         except AttributeError:
             if execute_only_once():
                 logger.warn("You're not using latest ALE")
@@ -64,6 +69,7 @@ class AtariPlayer(gym.Env):
             self.rng = get_rng(self)
             self.ale.setInt(b"random_seed", self.rng.randint(0, 30000))
             self.ale.setInt(b"max_num_frames_per_episode", max_num_frames)
+            self.ale.setBool(b"showinfo", False)
 
             self.ale.setInt(b"frame_skip", 1)
             self.ale.setBool(b'color_averaging', False)
@@ -80,6 +86,7 @@ class AtariPlayer(gym.Env):
             self.viz = viz
             if self.viz and isinstance(self.viz, float):
                 self.windowname = os.path.basename(rom_file)
+                cv2.startWindowThread()
                 cv2.namedWindow(self.windowname)
 
             self.ale.loadROM(rom_file.encode('utf-8'))
@@ -90,19 +97,15 @@ class AtariPlayer(gym.Env):
         self.frame_skip = frame_skip
         self.nullop_start = nullop_start
 
+        self.current_episode_score = StatCounter()
+
         self.action_space = spaces.Discrete(len(self.actions))
-        self.grayscale = grayscale
-        shape = (self.height, self.width) if grayscale else (self.height, self.width, 3)
         self.observation_space = spaces.Box(
-            low=0, high=255, shape=shape, dtype=np.uint8)
+            low=0, high=255, shape=(self.height, self.width))
         self._restart_episode()
 
     def get_action_meanings(self):
-        keys = Action.__members__.values()
-        values = Action.__members__.keys()
-        mapping = dict(zip(keys, values))
-        return [mapping[action] for action in self.actions]
-
+        return [ACTION_MEANING[i] for i in self.actions]
 
     def _grab_raw_image(self):
         """
@@ -121,13 +124,14 @@ class AtariPlayer(gym.Env):
         if self.viz:
             if isinstance(self.viz, float):
                 cv2.imshow(self.windowname, ret)
-                cv2.waitKey(int(self.viz * 1000))
-        if self.grayscale:
-            # 0.299,0.587.0.114. same as rgb2y in torch/image
-            ret = cv2.cvtColor(ret, cv2.COLOR_RGB2GRAY)
+                time.sleep(self.viz)
+        ret = ret.astype('float32')
+        # 0.299,0.587.0.114. same as rgb2y in torch/image
+        ret = cv2.cvtColor(ret, cv2.COLOR_RGB2GRAY)
         return ret.astype('uint8')  # to save some memory
 
     def _restart_episode(self):
+        self.current_episode_score.reset()
         with _ALE_LOCK:
             self.ale.reset_game()
 
@@ -139,15 +143,12 @@ class AtariPlayer(gym.Env):
                 self.last_raw_screen = self._grab_raw_image()
             self.ale.act(0)
 
-    def reset(self):
+    def _reset(self):
         if self.ale.game_over():
             self._restart_episode()
         return self._current_state()
 
-    def render(self, *args, **kwargs):
-        pass  # visualization for this env is through the viz= argument when creating the player
-
-    def step(self, act):
+    def _step(self, act):
         oldlives = self.ale.lives()
         r = 0
         for k in range(self.frame_skip):
@@ -159,11 +160,12 @@ class AtariPlayer(gym.Env):
                     (self.live_lost_as_eoe and newlives < oldlives):
                 break
 
-        isOver = self.ale.game_over()
+        self.current_episode_score.feed(r)
+        trueIsOver = isOver = self.ale.game_over()
         if self.live_lost_as_eoe:
             isOver = isOver or newlives < oldlives
 
-        info = {'ale.lives': newlives}
+        info = {'score': self.current_episode_score.sum, 'gameOver': trueIsOver}
         return self._current_state(), r, isOver, info
 
 

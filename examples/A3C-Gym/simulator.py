@@ -1,23 +1,29 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: simulator.py
-# Author: Yuxin Wu
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
+import tensorflow as tf
 import multiprocessing as mp
+import time
 import os
 import threading
-import time
-from abc import ABCMeta, abstractmethod
+from abc import abstractmethod, ABCMeta
 from collections import defaultdict
-import six
-import zmq
-from six.moves import queue
 
+import six
+from six.moves import queue
+import zmq
+
+from tensorpack.callbacks import Callback
+from tensorpack.tfutils.varmanip import SessionUpdate
+from tensorpack.predict import OfflinePredictor
 from tensorpack.utils import logger
-from tensorpack.utils.concurrency import LoopThread, enable_death_signal, ensure_proc_terminate
-from tensorpack.utils.serialize import dumps, loads
+from tensorpack.utils.serialize import loads, dumps
+from tensorpack.utils.concurrency import LoopThread, ensure_proc_terminate
 
 __all__ = ['SimulatorProcess', 'SimulatorMaster',
+           'SimulatorProcessStateExchange',
            'TransitionExperience']
 
 
@@ -34,7 +40,19 @@ class TransitionExperience(object):
 
 
 @six.add_metaclass(ABCMeta)
-class SimulatorProcess(mp.Process):
+class SimulatorProcessBase(mp.Process):
+    def __init__(self, idx):
+        super(SimulatorProcessBase, self).__init__()
+        self.idx = int(idx)
+        self.name = u'simulator-{}'.format(self.idx)
+        self.identity = self.name.encode('utf-8')
+
+    @abstractmethod
+    def _build_player(self):
+        pass
+
+
+class SimulatorProcessStateExchange(SimulatorProcessBase):
     """
     A process that simulates a player and communicates to master to
     send states and receive the next action
@@ -46,16 +64,11 @@ class SimulatorProcess(mp.Process):
             idx: idx of this process
             pipe_c2s, pipe_s2c (str): name of the pipe
         """
-        super(SimulatorProcess, self).__init__()
-        self.idx = int(idx)
-        self.name = u'simulator-{}'.format(self.idx)
-        self.identity = self.name.encode('utf-8')
-
+        super(SimulatorProcessStateExchange, self).__init__(idx)
         self.c2s = pipe_c2s
         self.s2c = pipe_s2c
 
     def run(self):
-        enable_death_signal()
         player = self._build_player()
         context = zmq.Context()
         c2s_socket = context.socket(zmq.PUSH)
@@ -76,32 +89,26 @@ class SimulatorProcess(mp.Process):
             c2s_socket.send(dumps(
                 (self.identity, state, reward, isOver)),
                 copy=False)
-            action = loads(s2c_socket.recv(copy=False))
+            action = loads(s2c_socket.recv(copy=False).bytes)
             state, reward, isOver, _ = player.step(action)
             if isOver:
                 state = player.reset()
 
-    @abstractmethod
-    def _build_player(self):
-        pass
+
+# compatibility
+SimulatorProcess = SimulatorProcessStateExchange
 
 
-@six.add_metaclass(ABCMeta)
 class SimulatorMaster(threading.Thread):
-    """ A base thread to communicate with all SimulatorProcess.
+    """ A base thread to communicate with all StateExchangeSimulatorProcess.
         It should produce action for each simulator, as well as
         defining callbacks when a transition or an episode is finished.
     """
     class ClientState(object):
         def __init__(self):
             self.memory = []    # list of Experience
-            self.ident = None
 
     def __init__(self, pipe_c2s, pipe_s2c):
-        """
-        Args:
-            pipe_c2s, pipe_s2c (str): names of pipe to be used for communication
-        """
         super(SimulatorMaster, self).__init__()
         assert os.name != 'nt', "Doesn't support windows!"
         self.daemon = True
@@ -138,19 +145,37 @@ class SimulatorMaster(threading.Thread):
         self.clients = defaultdict(self.ClientState)
         try:
             while True:
-                msg = loads(self.c2s_socket.recv(copy=False))
+                msg = loads(self.c2s_socket.recv(copy=False).bytes)
                 ident, state, reward, isOver = msg
+                # TODO check history and warn about dead client
                 client = self.clients[ident]
-                if client.ident is None:
-                    client.ident = ident
-                # maybe check history and warn about dead client?
-                self._process_msg(client, state, reward, isOver)
+
+                # check if reward&isOver is valid
+                # in the first message, only state is valid
+                if len(client.memory) > 0:
+                    client.memory[-1].reward = reward
+                    if isOver:
+                        self._on_episode_over(ident)
+                    else:
+                        self._on_datapoint(ident)
+                # feed state and return action
+                self._on_state(state, ident)
         except zmq.ContextTerminated:
             logger.info("[Simulator] Context was terminated.")
 
     @abstractmethod
-    def _process_msg(self, client, state, reward, isOver):
-        pass
+    def _on_state(self, state, ident):
+        """response to state sent by ident. Preferrably an async call"""
+
+    @abstractmethod
+    def _on_episode_over(self, client):
+        """ callback when the client just finished an episode.
+            You may want to clear the client's memory in this callback.
+        """
+
+    def _on_datapoint(self, client):
+        """ callback when the client just finished a transition
+        """
 
     def __del__(self):
         self.context.destroy(linger=0)
@@ -174,7 +199,7 @@ if __name__ == '__main__':
             client.memory = []
             client.state = 0
 
-    name = 'ipc://@whatever'
+    name = 'ipc://whatever'
     procs = [NaiveSimulator(k, name) for k in range(10)]
     [k.start() for k in procs]
 

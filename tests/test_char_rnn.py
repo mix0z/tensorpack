@@ -1,6 +1,5 @@
-import os
-
 from case_script import TestPythonScript
+import os
 
 
 def random_content():

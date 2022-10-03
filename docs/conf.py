@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# flake8: noqa
+#
 # tensorpack documentation build configuration file, created by
 # sphinx-quickstart on Sun Mar 27 01:41:24 2016.
 #
@@ -15,83 +15,36 @@
 import sys, os, re
 import mock
 import inspect
-from sphinx.domains import Domain
-
-class GithubURLDomain(Domain):
-    """
-    Resolve certain links in markdown files to github source.
-    """
-
-    name = "githuburl"
-    ROOT = "https://github.com/tensorpack/tensorpack/blob/master/"
-
-    def resolve_any_xref(self, env, fromdocname, builder, target, node, contnode):
-        github_url = None
-        if ".html" not in target:
-            if target.startswith("../../") and not target.startswith("../../modules"):
-                url = target.replace("../", "")
-                github_url = url
-
-        if github_url is not None:
-            if github_url.endswith("README"):
-                # bug of recommonmark.
-                # https://github.com/readthedocs/recommonmark/blob/ddd56e7717e9745f11300059e4268e204138a6b1/recommonmark/parser.py#L152-L155
-                github_url += ".md"
-            print("Ref {} resolved to github:{}".format(target, github_url))
-            contnode["refuri"] = self.ROOT + github_url
-            return [("githuburl:any", contnode)]
-        else:
-            return []
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 sys.path.insert(0, os.path.abspath('../'))
-os.environ['DOC_BUILDING'] = '1'
-ON_RTD = (os.environ.get('READTHEDOCS') == 'True')
+os.environ['TENSORPACK_DOC_BUILDING'] = '1'
 
 
-MOCK_MODULES = ['tabulate', 'h5py',
-                'cv2', 'zmq', 'lmdb',
-                'msgpack', 'msgpack_numpy', 'pyarrow',
-                'sklearn', 'sklearn.datasets',
-                'scipy', 'scipy.misc', 'scipy.io',
-                'tornado', 'tornado.concurrent',
-                'horovod', 'horovod.tensorflow',
-                'subprocess32', 'functools32', 'psutil']
-
-# it's better to have tensorflow installed (for some docs to show)
-# but it's OK to mock it as well
-try:
-    import tensorflow
-except ImportError:
-    mod = sys.modules['tensorflow'] = mock.Mock(name='tensorflow')
-    mod.__version__ = mod.VERSION = '1.12'
-    MOCK_MODULES.extend(['tensorflow.python.training.monitored_session'])
-    MOCK_MODULES.extend(['tensorflow.python.training'])
-    MOCK_MODULES.extend(['tensorflow.python.client'])
-    MOCK_MODULES.extend(['tensorflow.python.framework'])
-    MOCK_MODULES.extend(['tensorflow.python.platform'])
-    MOCK_MODULES.extend(['tensorflow.python.tools'])
-    MOCK_MODULES.extend(['tensorflow.contrib.graph_editor'])
-
+MOCK_MODULES = ['scipy', 'tabulate',
+                'sklearn.datasets', 'sklearn',
+                'scipy.misc', 'h5py', 'nltk',
+                'cv2', 'scipy.io', 'dill', 'zmq', 'subprocess32', 'lmdb',
+                'tornado.concurrent', 'tornado',
+                'msgpack', 'msgpack_numpy',
+                'gym', 'functools32']
 for mod_name in MOCK_MODULES:
     sys.modules[mod_name] = mock.Mock(name=mod_name)
 sys.modules['cv2'].__version__ = '3.2.1'    # fake version
-sys.modules['msgpack'].version = (0, 5, 2)
 
 import tensorpack
 
 # -- General configuration ------------------------------------------------
 
 # If your documentation needs a minimal Sphinx version, state it here.
-needs_sphinx = '3.0'
+needs_sphinx = '1.4'
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
-    'recommonmark',
     'sphinx.ext.autodoc',
     'sphinx.ext.todo',
     'sphinx.ext.napoleon',
@@ -109,20 +62,22 @@ napoleon_include_special_with_doc = True
 napoleon_numpy_docstring = False
 napoleon_use_rtype = False
 
-if ON_RTD:
+if os.environ.get('READTHEDOCS') == 'True':
     intersphinx_timeout = 10
 else:
     # skip this when building locally
     intersphinx_timeout = 0.1
-intersphinx_mapping = {
-    'python': ('https://docs.python.org/3.6', None),
-    'numpy': ('https://docs.scipy.org/doc/numpy/', None),
-}
+intersphinx_mapping = {'python': ('https://docs.python.org/3.4', None)}
 # -------------------------
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
 
+# to support markdown
+from recommonmark.parser import CommonMarkParser
+source_parsers = {
+    '.md': CommonMarkParser,
+}
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
 source_suffix = ['.rst', '.md']
@@ -135,8 +90,8 @@ master_doc = 'index'
 
 # General information about the project.
 project = u'tensorpack'
-copyright = u'2015 - 2020, Yuxin Wu, et al.'
-author = u'Yuxin Wu, et al.'
+copyright = u'2015 - 2017, Yuxin Wu'
+author = u'Yuxin Wu'
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
@@ -221,7 +176,7 @@ html_theme_options = {}
 # The name of an image file (relative to this directory) to use as a favicon of
 # the docs.  This file should be a Windows icon file (.ico) being 16x16 or 32x32
 # pixels large.
-html_favicon = '_static/favicon.ico'
+#html_favicon = None
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
@@ -388,67 +343,34 @@ def process_signature(app, what, name, obj, options, signature,
         signature = re.sub('tensorflow', 'tf', signature)
 
         # add scope name to layer signatures:
-        if hasattr(obj, 'use_scope'):
+        if hasattr(obj, 'use_scope') and hasattr(obj, 'symbolic_function'):
             if obj.use_scope:
-                signature = signature[0] + 'variable_scope_name, ' + signature[1:]
+                signature = signature[0] + 'scope_name, ' + signature[1:]
             elif obj.use_scope is None:
-                signature = signature[0] + '[variable_scope_name,] ' + signature[1:]
+                signature = signature[0] + '[scope_name,] ' + signature[1:]
     # signature: arg list
     return signature, return_annotation
 
-
-_DEPRECATED_NAMES = set([
-    # deprecated stuff:
-    'QueueInputTrainer',
-    'dump_dataflow_to_process_queue',
-    'DistributedTrainerReplicated',
-    'DistributedTrainerParameterServer',
-    'Augmentor',
-    "get_model_loader",
-
-    # renamed items that should not appear in docs
-    'load_chkpt_vars',
-    'save_chkpt_vars',
-    'DumpTensor',
-    'DumpParamAsImage',
-    'get_nr_gpu',
-    'TrainingMonitor',
-    'PeakMemoryTracker',
-    'TowerFuncWrapper',
-
-    'PrefetchData',
-    'MultiProcessPrefetchData',
-    'PrefetchDataZMQ',
-    'MultiThreadPrefetchData',
-
-    # deprecated or renamed symbolic code
-    'Deconv2D',
-
-    # shouldn't appear in doc:
-    'l2_regularizer', 'l1_regularizer',
-
-    # internal only
-    'execute_only_once',
-    'humanize_time_delta',
-    'SessionUpdate',
-    'get_checkpoint_path',
-    'IterSpeedCounter'
-])
-
 def autodoc_skip_member(app, what, name, obj, skip, options):
-    # we hide something deliberately
-    if getattr(obj, '__HIDE_SPHINX_DOC__', False):
+    if name in [
+        'MultiGPUTrainerBase',
+        'FeedfreeInferenceRunner',
+        'replace_get_variable',
+        'remap_get_variable',
+        'freeze_get_variable',
+        'Triggerable',
+        'predictor_factory',
+        'get_predictors',
+        'RandomCropAroundBox',
+        'GaussianDeform',
+        'dump_chkpt_vars',
+        'VisualQA',
+        'huber_loss',
+        'DumpTensor',
+        'StepTensorPrinter'
+        ]:
         return True
-    if name == '__init__':
-        if obj.__doc__ and skip:
-            # include_init_with_doc doesn't work well for decorated init
-            # https://github.com/sphinx-doc/sphinx/issues/4258
-            return False
-    # Hide some names that are deprecated or not intended to be used
-    if name in _DEPRECATED_NAMES:
-        return True
-
-    if name in ['__iter__', '__len__', 'reset_state', 'get_data', 'size']:
+    if name in ['get_data', 'size', 'reset_state']:
         # skip these methods with empty docstring
         if not obj.__doc__ and inspect.isfunction(obj):
             # https://stackoverflow.com/questions/3589311/get-defining-class-of-unbound-method-object-in-python-3
@@ -458,14 +380,20 @@ def autodoc_skip_member(app, what, name, obj, skip, options):
                 return True
     return None
 
+def url_resolver(url):
+    if '.html' not in url:
+        return "https://github.com/ppwwyyxx/tensorpack/blob/master/" + url
+    else:
+        return "http://tensorpack.readthedocs.io/en/latest/" + url
+
 def setup(app):
     from recommonmark.transform import AutoStructify
-    app.add_domain(GithubURLDomain)
     app.connect('autodoc-process-signature', process_signature)
     app.connect('autodoc-skip-member', autodoc_skip_member)
     app.add_config_value(
         'recommonmark_config',
-        {'auto_toc_tree_section': 'Contents',
+        {'url_resolver': url_resolver,
+         'auto_toc_tree_section': 'Contents',
          'enable_math': True,
          'enable_inline_math': True,
          'enable_eval_rst': True

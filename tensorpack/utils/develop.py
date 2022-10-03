@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: develop.py
 # Author: tensorpack contributors
@@ -6,17 +7,13 @@
 """ Utilities for developers only.
 These are not visible to users (not automatically imported). And should not
 appeared in docs."""
-import functools
-import importlib
 import os
-import types
-from collections import defaultdict
+import functools
 from datetime import datetime
-import six
+import importlib
+import types
 
 from . import logger
-
-__all__ = []
 
 
 def create_dummy_class(klass, dependency):
@@ -30,19 +27,9 @@ def create_dummy_class(klass, dependency):
     Returns:
         class: a class object
     """
-    assert not building_rtfd()
-
-    class _DummyMetaClass(type):
-        # throw error on class attribute access
-        def __getattr__(_, __):
-            raise AttributeError("Cannot import '{}', therefore '{}' is not available".format(dependency, klass))
-
-    @six.add_metaclass(_DummyMetaClass)
     class _Dummy(object):
-        # throw error on constructor
         def __init__(self, *args, **kwargs):
             raise ImportError("Cannot import '{}', therefore '{}' is not available".format(dependency, klass))
-
     return _Dummy
 
 
@@ -57,9 +44,7 @@ def create_dummy_func(func, dependency):
     Returns:
         function: a function object
     """
-    assert not building_rtfd()
-
-    if isinstance(dependency, (list, tuple)):
+    if isinstance(dependency, (list, str)):
         dependency = ','.join(dependency)
 
     def _dummy(*args, **kwargs):
@@ -70,16 +55,13 @@ def create_dummy_func(func, dependency):
 def building_rtfd():
     """
     Returns:
-        bool: if the library is being imported to generate docs now.
+        bool: if tensorpack is being imported to generate docs now.
     """
     return os.environ.get('READTHEDOCS') == 'True' \
-        or os.environ.get('DOC_BUILDING')
+        or os.environ.get('TENSORPACK_DOC_BUILDING')
 
 
-_DEPRECATED_LOG_NUM = defaultdict(int)
-
-
-def log_deprecated(name="", text="", eos="", max_num_warnings=None):
+def log_deprecated(name="", text="", eos=""):
     """
     Log deprecation warning.
 
@@ -87,7 +69,6 @@ def log_deprecated(name="", text="", eos="", max_num_warnings=None):
         name (str): name of the deprecated item.
         text (str, optional): information about the deprecation.
         eos (str, optional): end of service date such as "YYYY-MM-DD".
-        max_num_warnings (int, optional): the maximum number of times to print this warning
     """
     assert name or text
     if eos:
@@ -101,18 +82,13 @@ def log_deprecated(name="", text="", eos="", max_num_warnings=None):
         warn_msg = text
         if eos:
             warn_msg += " Legacy period ends %s" % eos
-
-    if max_num_warnings is not None:
-        if _DEPRECATED_LOG_NUM[warn_msg] >= max_num_warnings:
-            return
-        _DEPRECATED_LOG_NUM[warn_msg] += 1
     logger.warn("[Deprecated] " + warn_msg)
 
 
-def deprecated(text="", eos="", max_num_warnings=None):
+def deprecated(text="", eos=""):
     """
     Args:
-        text, eos, max_num_warnings: same as :func:`log_deprecated`.
+        text, eos: same as :func:`log_deprecated`.
 
     Returns:
         a decorator which deprecates the function.
@@ -140,15 +116,10 @@ def deprecated(text="", eos="", max_num_warnings=None):
         @functools.wraps(func)
         def new_func(*args, **kwargs):
             name = "{} [{}]".format(func.__name__, get_location())
-            log_deprecated(name, text, eos, max_num_warnings=max_num_warnings)
+            log_deprecated(name, text, eos)
             return func(*args, **kwargs)
         return new_func
     return deprecated_inner
-
-
-def HIDE_DOC(func):
-    func.__HIDE_SPHINX_DOC__ = True
-    return func
 
 
 # Copied from https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/util/lazy_loader.py

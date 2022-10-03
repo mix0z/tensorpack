@@ -3,17 +3,18 @@
 
 The first thing to note: __you never have to write a layer__.
 Tensorpack layers are nothing but wrappers of symbolic functions.
-In tensorpack, you can use __any__ symbolic functions you have written or seen elsewhere with or without tensorpack layers.
+You can use any symbolic functions you have written or seen elsewhere with or without tensorpack layers.
 
-If you would like, you can make a symbolic function become a "layer" by following some simple rules, and then gain benefits from tensorpack.
+If you would like, you can make a symbolic function become a "layer" by following some simple rules, and then gain benefits from the framework.
 
-Take a look at the [ShuffleNet example](../../examples/ImageNetModels/shufflenet.py#L22) 
-to see an example of how to define a custom layer:
+Take a look at the [Convolutional Layer](../../tensorpack/models/conv2d.py#L14) implementation for an example of how to define a layer:
 
 ```python
 @layer_register(log_shape=True)
-def DepthConv(x, out_channel, kernel_shape, padding='SAME', stride=1,
-              W_init=None, activation=tf.identity):
+def Conv2D(x, out_channel, kernel_shape,
+           padding='SAME', stride=1,
+           W_init=None, b_init=None,
+           nl=tf.nn.relu, split=1, use_bias=True):
 ```
 
 Basically, a tensorpack layer is just a symbolic function, but with the following rules:
@@ -31,7 +32,8 @@ By making a symbolic function a "layer", the following things will happen:
 + `argscope` will work for all its arguments except the input tensor(s).
 + It will work with `LinearWrap`: you can use it if the output of one layer matches the input of the next layer.
 
-There is no rule about what kind of symbolic functions should be made a layer -- they are quite
+There are also some (non-layer) symbolic functions in the `tfutils.symbolic_functions` module.
+There is not a rule about what kind of symbolic functions should be made a layer -- they are quite
 similar anyway. However, in general, I define the following symbolic functions as layers:
 + Functions which contain variables. A variable scope is almost always helpful for such functions.
 + Functions which are commonly referred to as "layers", such as pooling. This makes a model

@@ -3,18 +3,19 @@
 # File: steering-filter.py
 
 import argparse
-import multiprocessing
 import numpy as np
-import cv2
 import tensorflow as tf
+import cv2
 from scipy.signal import convolve2d
+from six.moves import range, zip
+import multiprocessing
 
 from tensorpack import *
-from tensorpack.dataflow import dataset
 from tensorpack.utils import logger
-from tensorpack.utils.gpu import change_gpu
-from tensorpack.utils.argtools import shape2d, shape4d
+from tensorpack.utils.gpu import get_nr_gpu
 from tensorpack.utils.viz import *
+from tensorpack.utils.argtools import shape2d, shape4d
+from tensorpack.dataflow import dataset
 
 BATCH = 32
 SHAPE = 64
@@ -77,7 +78,7 @@ class OnlineTensorboardExport(Callback):
             x /= x.max()
             return x
 
-        o = self.pred(self.theta)
+        o = self.pred([self.theta])
 
         gt_filters = np.concatenate([self.filters[i, :, :] for i in range(8)], axis=0)
         pred_filters = np.concatenate([o[0][i, :, :, 0] for i in range(8)], axis=0)
@@ -88,17 +89,17 @@ class OnlineTensorboardExport(Callback):
         canvas = cv2.resize(canvas[..., None] * 255, (0, 0), fx=10, fy=10)
 
         self.trainer.monitors.put_image('filter_export', canvas)
-        # # you might also want to write these images to disk
+        # # you might also want to write these images to disk (as in the casestudy from the docs)
         # cv2.imwrite("export/out%04i.jpg" % self.cc, canvas)
         # self.cc += 1
 
 
 class Model(ModelDesc):
-    def inputs(self):
-        return [tf.TensorSpec((BATCH, ), tf.float32, 'theta'),
-                tf.TensorSpec((BATCH, SHAPE, SHAPE), tf.float32, 'image'),
-                tf.TensorSpec((BATCH, SHAPE, SHAPE), tf.float32, 'gt_image'),
-                tf.TensorSpec((BATCH, 9, 9), tf.float32, 'gt_filter')]
+    def _get_inputs(self):
+        return [InputDesc(tf.float32, (BATCH, ), 'theta'),
+                InputDesc(tf.float32, (BATCH, SHAPE, SHAPE), 'image'),
+                InputDesc(tf.float32, (BATCH, SHAPE, SHAPE), 'gt_image'),
+                InputDesc(tf.float32, (BATCH, 9, 9), 'gt_filter')]
 
     def _parameter_net(self, theta, kernel_shape=9):
         """Estimate filters for convolution layers
@@ -110,7 +111,8 @@ class Model(ModelDesc):
         Returns:
             learned filter as [B, k, k, 1]
         """
-        with argscope(FullyConnected, nl=tf.nn.leaky_relu):
+        with argscope(LeakyReLU, alpha=0.2), \
+                argscope(FullyConnected, nl=LeakyReLU):
             net = FullyConnected('fc1', theta, 64)
             net = FullyConnected('fc2', net, 128)
 
@@ -119,8 +121,12 @@ class Model(ModelDesc):
         logger.info('Parameter net output: {}'.format(pred_filter.get_shape().as_list()))
         return pred_filter
 
-    def build_graph(self, theta, image, gt_image, gt_filter):
+    def _build_graph(self, inputs):
         kernel_size = 9
+        theta, image, gt_image, gt_filter = inputs
+
+        image = image
+        gt_image = gt_image
 
         theta = tf.reshape(theta, [BATCH, 1, 1, 1]) - np.pi
         image = tf.reshape(image, [BATCH, SHAPE, SHAPE, 1])
@@ -138,12 +144,12 @@ class Model(ModelDesc):
         tf.summary.image('pred_gt_filters', filters, max_outputs=20)
         tf.summary.image('pred_gt_images', images, max_outputs=20)
 
-        cost = tf.reduce_mean(tf.squared_difference(pred_image, gt_image), name="cost")
-        summary.add_moving_summary(cost)
-        return cost
+        self.cost = tf.reduce_mean(tf.squared_difference(pred_image, gt_image), name="cost")
+        summary.add_moving_summary(self.cost)
 
-    def optimizer(self):
-        return tf.train.AdamOptimizer(1e-3)
+    def _get_optimizer(self):
+        lr = symbolic_functions.get_scalar_var('learning_rate', 1e-3, summary=True)
+        return tf.train.AdamOptimizer(lr)
 
 
 class ThetaImages(ProxyDataFlow, RNGDataFlow):
@@ -210,8 +216,8 @@ class ThetaImages(ProxyDataFlow, RNGDataFlow):
         ProxyDataFlow.reset_state(self)
         RNGDataFlow.reset_state(self)
 
-    def __iter__(self):
-        for image, _ in self.ds:
+    def get_data(self):
+        for image, label in self.ds.get_data():
             theta = self.rng.uniform(0, 2 * np.pi)
             filtered_image, gt_filter = ThetaImages.filter_with_theta(image, theta)
             yield [theta, image, filtered_image, gt_filter]
@@ -225,7 +231,7 @@ def get_data():
     ds = ThetaImages(ds)
     ds = RepeatedData(ds, 50)  # just pretend this dataset is bigger
     # this pre-computation is pretty heavy
-    ds = MultiProcessRunnerZMQ(ds, min(20, multiprocessing.cpu_count()))
+    ds = PrefetchDataZMQ(ds, min(20, multiprocessing.cpu_count()))
     ds = BatchData(ds, BATCH)
     return ds
 
@@ -241,7 +247,7 @@ def get_config():
             OnlineTensorboardExport()
         ],
         model=Model(),
-        steps_per_epoch=len(dataset_train),
+        steps_per_epoch=dataset_train.size(),
         max_epoch=50,
     )
 
@@ -253,7 +259,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     with change_gpu(args.gpu):
-        NGPU = len(args.gpu.split(','))
+        NR_GPU = len(args.gpu.split(','))
         config = get_config()
-        config.session_init = SmartInit(args.load)
-        launch_train_with_config(config, SyncMultiGPUTrainer(NGPU))
+        if args.load:
+            config.session_init = SaverRestore(args.load)
+        config.nr_tower = NR_GPU
+        SyncMultiGPUTrainer(config).train()

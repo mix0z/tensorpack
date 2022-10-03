@@ -1,10 +1,8 @@
-![badge](https://img.shields.io/badge/compatible%20with-TF2-orange)
-
 ![breakout](breakout.jpg)
 
 [video demo](https://youtu.be/o21mddZtE5Y)
 
-Reproduce (performance of) the following reinforcement learning methods:
+Reproduce the following reinforcement learning methods:
 
 + Nature-DQN in:
 [Human-level Control Through Deep Reinforcement Learning](http://www.nature.com/nature/journal/v518/n7540/full/nature14236.html)
@@ -17,57 +15,37 @@ Reproduce (performance of) the following reinforcement learning methods:
 + A3C in [Asynchronous Methods for Deep Reinforcement Learning](http://arxiv.org/abs/1602.01783). (I
 used a modified version where each batch contains transitions from different simulators, which I called "Batch-A3C".)
 
-## Usage:
+## Performance & Speed
+Claimed performance in the paper can be reproduced, on several games I've tested with.
 
-Install dependencies by `pip install 'gym[atari,accept-rom-license]'`.
+![DQN](curve-breakout.png)
 
-### With ALE (paper's setting):
+On one TitanX, Double-DQN took 1 day of training to reach a score of 400 on breakout game.
+Batch-A3C implementation only took <2 hours.
 
-Download an [atari rom](https://github.com/openai/atari-py/tree/gdb/atari_py/atari_roms), e.g.:
+Double-DQN runs at 60 batches (3840 trained frames, 240 seen frames, 960 game frames) per second on (Maxwell) TitanX.
+
+## How to use
+
+Install [ALE](https://github.com/mgbellemare/Arcade-Learning-Environment) and gym.
+
+Download an [atari rom](https://github.com/openai/atari-py/tree/master/atari_py/atari_roms) to
+`$TENSORPACK_DATASET/atari_rom/` (defaults to ~/tensorpack_data/atari_rom/), e.g.:
 ```
-wget https://github.com/openai/atari-py/raw/gdb/atari_py/atari_roms/breakout.bin
+mkdir -p ~/tensorpack_data/atari_rom
+wget https://github.com/openai/atari-py/raw/master/atari_py/atari_roms/breakout.bin -O ~/tensorpack_data/atari_rom/breakout.bin
 ```
 
 Start Training:
 ```
-./DQN.py --env breakout.bin
+./DQN.py --rom breakout.bin
 # use `--algo` to select other DQN algorithms. See `-h` for more options.
 ```
 
 Watch the agent play:
 ```
-# Download pretrained models or use one you trained:
-wget http://models.tensorpack.com/DeepQNetwork/DoubleDQN-breakout.bin.npz
-./DQN.py --env breakout.bin --task play --load DoubleDQN-breakout.bin.npz
+./DQN.py --rom breakout.bin --task play --load path/to/model
 ```
-
-Evaluation of 50 episodes:
-```
-./DQN.py --env breakout.bin --task eval --load DoubleDQN-breakout.bin.npz
-```
-
-### With gym's Atari:
-
-Use `--env ALE/Breakout-v5` instead of the ROM file.
-
-## Performance
-Claimed performance in the paper can be reproduced, on several games I've tested with.
-
-![DQN](curve-breakout.png)
-
-| Environment    | Avg Score | Download                                                                               |
-|:---------------|:---------:|:--------------------------------------------------------------------------------------:|
-| breakout.bin   | 465       | [:arrow_down:](http://models.tensorpack.com/DeepQNetwork/DoubleDQN-breakout.bin.npz)   |
-| seaquest.bin   | 8686      | [:arrow_down:](http://models.tensorpack.com/DeepQNetwork/DoubleDQN-seaquest.bin.npz)   |
-| ms_pacman.bin  | 3323      | [:arrow_down:](http://models.tensorpack.com/DeepQNetwork/DoubleDQN-ms_pacman.bin.npz)  |
-| beam_rider.bin | 15835     | [:arrow_down:](http://models.tensorpack.com/DeepQNetwork/DoubleDQN-beam_rider.bin.npz) |
-
-## Speed
-On one GTX 1080Ti,
-the ALE version took
-__~2 hours__ of training to reach 21 (maximum) score on Pong,
-__~10 hours__ of training to reach 400 score on Breakout.
-It runs at 100 batches (6.4k trained frames, 400 seen frames, 1.6k game frames) per second on GTX 1080Ti.
-This is likely the fastest open source TF implementation of DQN.
+A pretrained model on breakout can be downloaded [here](https://drive.google.com/open?id=0B9IPQTvr2BBkN1Jrei1xWW0yR28).
 
 A3C code and models for Atari games in OpenAI Gym are released in [examples/A3C-Gym](../A3C-Gym)

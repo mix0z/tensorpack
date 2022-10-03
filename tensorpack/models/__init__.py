@@ -1,20 +1,6 @@
-#  -*- coding: utf-8 -*-
+#  -*- coding: UTF-8 -*-
 #  File: __init__.py
-
-# https://github.com/celery/kombu/blob/7d13f9b95d0b50c94393b962e6def928511bfda6/kombu/__init__.py#L34-L36
-STATICA_HACK = True
-globals()['kcah_acitats'[::-1].upper()] = False
-if STATICA_HACK:
-    from .batch_norm import *
-    from .common import *
-    from .conv2d import *
-    from .fc import *
-    from .layer_norm import *
-    from .linearwrap import *
-    from .nonlin import *
-    from .pool import *
-    from .regularize import *
-
+#  Author: Yuxin Wu <ppwwyyxx@gmail.com>
 
 from pkgutil import iter_modules
 import os
@@ -36,15 +22,10 @@ def _global_import(name):
 
 
 _CURR_DIR = os.path.dirname(__file__)
-_SKIP = ['utils', 'registry', 'tflayer']
 for _, module_name, _ in iter_modules(
         [_CURR_DIR]):
     srcpath = os.path.join(_CURR_DIR, module_name + '.py')
     if not os.path.isfile(srcpath):
         continue
-    if module_name.startswith('_'):
-        continue
-    if "_test" in module_name:
-        continue
-    if module_name not in _SKIP:
+    if not module_name.startswith('_'):
         _global_import(module_name)

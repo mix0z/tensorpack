@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: shape_utils.py
 
@@ -15,7 +16,7 @@ class StaticDynamicAxis(object):
         try:
             st = f(self.static)
             return StaticDynamicAxis(st, st)
-        except TypeError:
+        except:
             return StaticDynamicAxis(None, f(self.dynamic))
 
     def __str__(self):
@@ -52,7 +53,7 @@ class StaticDynamicShape(object):
                 self.static[axis] = st
                 self.dynamic[axis] = StaticLazyAxis(st)
                 return
-            except TypeError:
+            except:
                 pass
         self.static[axis] = None
         dyn = self.dynamic[axis]

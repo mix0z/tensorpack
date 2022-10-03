@@ -1,11 +1,12 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # Author: Your Name <your@email.com>
 
-import argparse
 import os
-import tensorflow as tf
-
+import argparse
 from tensorpack import *
+from tensorpack.utils.gpu import get_nr_gpu
+import tensorflow as tf
 
 """
 This is a boiler-plate template.
@@ -18,18 +19,19 @@ CHANNELS = 3
 
 
 class Model(ModelDesc):
-    def inputs(self):
-        return [tf.TensorSpec((None, SHAPE, SHAPE, CHANNELS), tf.float32, 'input1'),
-                tf.TensorSpec((None,), tf.int32, 'input2')]
+    def _get_inputs(self):
+        return [InputDesc(tf.float32, (None, SHAPE, SHAPE, CHANNELS), 'input'),
+                InputDesc(tf.int32, (None,), 'label')]
 
-    def build_graph(self, input1, input2):
+    def _build_graph(self, inputs):
+        image, label = inputs
+        image = image * 2 - 1
 
-        cost = tf.identity(input1 - input2, name='total_costs')
-        summary.add_moving_summary(cost)
-        return cost
+        self.cost = tf.identity(0., name='total_costs')
+        summary.add_moving_summary(self.cost)
 
-    def optimizer(self):
-        lr = tf.get_variable('learning_rate', initializer=5e-3, trainable=False)
+    def _get_optimizer(self):
+        lr = symbolic_functions.get_scalar_var('learning_rate', 5e-3, summary=True)
         return tf.train.AdamOptimizer(lr)
 
 
@@ -37,7 +39,7 @@ def get_data(subset):
     # something that yields [[SHAPE, SHAPE, CHANNELS], [1]]
     ds = FakeData([[SHAPE, SHAPE, CHANNELS], [1]], 1000, random=False,
                   dtype=['float32', 'uint8'], domain=[(0, 255), (0, 10)])
-    ds = MultiProcessRunnerZMQ(ds, 2)
+    ds = PrefetchDataZMQ(ds, 2)
     ds = BatchData(ds, BATCH_SIZE)
     return ds
 
@@ -50,12 +52,12 @@ def get_config():
 
     return TrainConfig(
         model=Model(),
-        data=QueueInput(ds_train),
+        dataflow=ds_train,
         callbacks=[
             ModelSaver(),
             InferenceRunner(ds_test, [ScalarStats('total_costs')]),
         ],
-        steps_per_epoch=len(ds_train),
+        steps_per_epoch=ds_train.size(),
         max_epoch=100,
     )
 
@@ -70,6 +72,10 @@ if __name__ == '__main__':
         os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
     config = get_config()
-    config.session_init = SmartInit(args.load)
 
-    launch_train_with_config(config, SimpleTrainer())
+    if args.gpu:
+        config.nr_tower = len(args.gpu.split(','))
+    if args.load:
+        config.session_init = SaverRestore(args.load)
+
+    SyncMultiGPUTrainer(config).train()

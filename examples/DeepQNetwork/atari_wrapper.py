@@ -1,12 +1,13 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: atari_wrapper.py
 
 import numpy as np
+import cv2
 from collections import deque
-import gym
 
-_v0, _v1 = gym.__version__.split('.')[:2]
-assert int(_v0) > 0 or int(_v1) >= 10, gym.__version__
+import gym
+from gym import spaces
 
 
 """
@@ -15,41 +16,50 @@ https://github.com/openai/baselines/blob/master/baselines/common/atari_wrappers.
 """
 
 
-class MapState(gym.ObservationWrapper):
-    def __init__(self, env, map_func):
+class WarpFrame(gym.ObservationWrapper):
+    def __init__(self, env, shape):
         gym.ObservationWrapper.__init__(self, env)
-        self._func = map_func
+        self.shape = shape
+        obs = env.observation_space
+        assert isinstance(obs, spaces.Box)
+        chan = 1 if len(obs.shape) == 2 else obs.shape[2]
+        shape3d = shape if chan == 1 else shape + (chan,)
+        self.observation_space = spaces.Box(low=0, high=255, shape=shape3d)
 
-    def observation(self, obs):
-        return self._func(obs)
+    def _observation(self, obs):
+        return cv2.resize(obs, self.shape)
 
 
 class FrameStack(gym.Wrapper):
-    """
-    Buffer consecutive k observations and stack them on a new last axis.
-    The output observation has shape `original_shape + (k, )`.
-    """
     def __init__(self, env, k):
+        """Buffer observations and stack across channels (last axis)."""
         gym.Wrapper.__init__(self, env)
         self.k = k
         self.frames = deque([], maxlen=k)
+        shp = env.observation_space.shape
+        chan = 1 if len(shp) == 2 else shp[2]
+        self._base_dim = len(shp)
+        self.observation_space = spaces.Box(low=0, high=255, shape=(shp[0], shp[1], chan * k))
 
-    def reset(self):
+    def _reset(self):
         """Clear buffer and re-fill by duplicating the first observation."""
         ob = self.env.reset()
         for _ in range(self.k - 1):
             self.frames.append(np.zeros_like(ob))
         self.frames.append(ob)
-        return self.observation()
+        return self._observation()
 
-    def step(self, action):
+    def _step(self, action):
         ob, reward, done, info = self.env.step(action)
         self.frames.append(ob)
-        return self.observation(), reward, done, info
+        return self._observation(), reward, done, info
 
-    def observation(self):
+    def _observation(self):
         assert len(self.frames) == self.k
-        return np.stack(self.frames, axis=-1)
+        if self._base_dim == 2:
+            return np.stack(self.frames, axis=-1)
+        else:
+            return np.concatenate(self.frames, axis=2)
 
 
 class _FireResetEnv(gym.Wrapper):
@@ -59,7 +69,7 @@ class _FireResetEnv(gym.Wrapper):
         assert env.unwrapped.get_action_meanings()[1] == 'FIRE'
         assert len(env.unwrapped.get_action_meanings()) >= 3
 
-    def reset(self):
+    def _reset(self):
         self.env.reset()
         obs, _, done, _ = self.env.step(1)
         if done:
@@ -68,9 +78,6 @@ class _FireResetEnv(gym.Wrapper):
         if done:
             self.env.reset()
         return obs
-
-    def step(self, action):
-        return self.env.step(action)
 
 
 def FireResetEnv(env):
@@ -88,7 +95,7 @@ class LimitLength(gym.Wrapper):
         gym.Wrapper.__init__(self, env)
         self.k = k
 
-    def reset(self):
+    def _reset(self):
         # This assumes that reset() will really reset the env.
         # If the underlying env tries to be smart about reset
         # (e.g. end-of-life), the assumption doesn't hold.
@@ -96,7 +103,7 @@ class LimitLength(gym.Wrapper):
         self.cnt = 0
         return ob
 
-    def step(self, action):
+    def _step(self, action):
         ob, r, done, info = self.env.step(action)
         self.cnt += 1
         if self.cnt == self.k:

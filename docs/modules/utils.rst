@@ -1,11 +1,6 @@
 tensorpack.utils package
 ========================
 
-.. automodule:: tensorpack.utils
-    :members:
-    :undoc-members:
-    :show-inheritance:
-
 tensorpack.utils.argtools module
 --------------------------------
 
@@ -27,6 +22,14 @@ tensorpack.utils.fs module
 --------------------------
 
 .. automodule:: tensorpack.utils.fs
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+tensorpack.utils.globvars module
+--------------------------------
+
+.. automodule:: tensorpack.utils.globvars
     :members:
     :undoc-members:
     :show-inheritance:

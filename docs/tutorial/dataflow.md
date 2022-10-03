@@ -1,82 +1,71 @@
 
 # DataFlow
 
-DataFlow is a pure-Python library to create iterators for efficient data loading.
-It is originally part of tensorpack, and now also available as a [separate library](https://github.com/tensorpack/dataflow).
-
 ### What is DataFlow
 
-**Definition**: A DataFlow instance is a idiomatic Python iterator object that has a `__iter__()` method
-which yields `datapoints`, and optionally a `__len__()` method returning the size of the DataFlow.
-A datapoint is a **list or dict** of Python objects, each of which are called the `components` of a datapoint.
+DataFlow is a library to build Python iterators for efficient data loading.
 
-**Example**: to train on MNIST dataset, you may need a DataFlow with a `__iter__()` method
+**Definition**: A DataFlow is something that has a `get_data()` generator method,
+which yields `datapoints`.
+A datapoint is a **list** of Python objects which are called the `components` of a datapoint.
+
+**Example**: to train on MNIST dataset, you may need a DataFlow with a `get_data()` method
 that yields datapoints (lists) of two components:
 a numpy array of shape (64, 28, 28), and an array of shape (64,).
 
-DataFlow is independent of the training frameworks since it produces any python objects
-(usually numpy arrays).
-You can simply use DataFlow as a data processing pipeline and plug it into your own training code.
-
-### Load Raw Data
-We do not make any assumptions about your data format.
-You would usually want to write the source DataFlow (`MyDataFlow` in the example below) for your own data format.
-See [another tutorial](extend/dataflow.md) for simple instructions on writing a DataFlow.
-
-### Assemble the Pipeline
-There are a lot of existing DataFlow utilities in tensorpack, which you can use to assemble
-the source DataFlow with complex data pipeline.
-A common pipeline usually would
-__read from disk (or other sources),
-apply transformations,
-group into batches, prefetch data__, etc, and all __run in parallel__.
-A simple DataFlow pipeline is like the following:
+### Composition of DataFlow
+One good thing about having a standard interface is to be able to provide
+the greatest code reusability.
+There are a lot of existing DataFlow utilities in tensorpack, which you can use to compose
+complex DataFlow with a long data pipeline. A common pipeline usually
+would __read from disk (or other sources), apply augmentations, group into batches,
+prefetch data__, etc. A simple example is as the following:
 
 ````python
 # a DataFlow you implement to produce [tensor1, tensor2, ..] lists from whatever sources:
 df = MyDataFlow(dir='/my/data', shuffle=True)
-# apply transformation to your data
-df = MapDataComponent(df, lambda t: transform(t), 0)
+# resize the image component of each datapoint
+df = AugmentImageComponent(df, [imgaug.Resize((225, 225))])
 # group data into batches of size 128
 df = BatchData(df, 128)
 # start 3 processes to run the dataflow in parallel
-df = MultiProcessRunnerZMQ(df, 3)
+df = PrefetchDataZMQ(df, 3)
 ````
+You can find more complicated DataFlow in the [ResNet training script](../examples/ResNet/imagenet_utils.py)
+with all the data preprocessing.
 
-A list of built-in DataFlow to use can be found at [API docs](../modules/dataflow).
-You can also find complicated real-life DataFlow pipelines in the [ImageNet training script](../../examples/ImageNetModels/imagenet_utils.py)
-or other tensorpack examples.
+Unless you are working with standard data types (image folders, LMDB, etc),
+you would usually want to write the base DataFlow (`MyDataFlow` in the above example) for your data format.
+See [another tutorial](extend/dataflow.html)
+for simple instructions on writing a DataFlow.
+Once you have the base reader, all the [existing DataFlows](../modules/dataflow.html) are ready for you to complete
+the rest of the data pipeline.
 
-### Parallelize the Pipeline
+### Why DataFlow
 
-DataFlow includes **carefully optimized** parallel runners and parallel mappers: `Multi{Thread,Process}{Runner,MapData}`.
-Runners execute multiple clones of a dataflow in parallel.
-Mappers execute a mapping function in parallel on top of an existing dataflow.
-You can find details in the [API docs](../modules/dataflow) under the
-"parallel" and "parallel_map" section.
+1. It's easy: write everything in pure Python, and reuse existing utilities.
+	 On the contrary, writing data loaders in TF operators is usually painful, and performance is hard to tune.
+2. It's fast: see [Efficient DataFlow](efficient-dataflow.html)
+	on how to build a fast DataFlow with parallelism.
+	If you're using DataFlow with tensorpack, also see [Input Pipeline tutorial](input-source.html)
+	on how tensorpack further accelerates data loading in the graph.
 
-[Parallel DataFlow tutorial](parallel-dataflow.md) gives a deeper dive
-on how to use them to optimize your data pipeline.
+Nevertheless, tensorpack support data loading with native TF operators / TF datasets as well.
 
-### Run the DataFlow
-
-When training with tensorpack, typically it is the `InputSource` interface that runs the DataFlow.
-
-When using DataFlow alone without tensorpack,
-you need to call `reset_state()` first to initialize it,
+### Use DataFlow (outside Tensorpack)
+Existing tensorpack trainers work with DataFlow out-of-the-box.
+If you use DataFlow in some custom code, call `reset_state()` first to initialize it,
 and then use the generator however you like:
-
 ```python
 df = SomeDataFlow()
 
 df.reset_state()
-for dp in df:
-    # dp is now a list/dict. do whatever with it
+generator = df.get_data()
+for dp in generator:
+	# dp is now a list. do whatever
 ```
 
-### Why DataFlow?
+DataFlow is __independent__ of both tensorpack and TensorFlow.
+To `import tensorpack.dataflow`, you don't even have to install TensorFlow.
+You can simply use it as a data processing pipeline and plug it into any other frameworks.
 
-It's **easy and fast**.
-For more discussions, see [Why DataFlow?](./philosophy/dataflow.md)
-Nevertheless, using DataFlow is not required in tensorpack.
-Tensorpack supports data loading with native TF operators / TF datasets as well.

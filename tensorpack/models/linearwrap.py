@@ -1,10 +1,10 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: linearwrap.py
+# Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
-
-from types import ModuleType
 import six
-
+from types import ModuleType
 from .registry import get_registered_layer
 
 __all__ = ['LinearWrap']
@@ -44,18 +44,18 @@ class LinearWrap(object):
             # this is a registered tensorpack layer
             # parse arguments by tensorpack model convention
             if layer.use_scope:
-                def layer_func(name, *args, **kwargs):
+                def f(name, *args, **kwargs):
                     ret = layer(name, self._t, *args, **kwargs)
                     return LinearWrap(ret)
             else:
-                def layer_func(*args, **kwargs):
+                def f(*args, **kwargs):
                     if len(args) and isinstance(args[0], six.string_types):
                         name, args = args[0], args[1:]
                         ret = layer(name, self._t, *args, **kwargs)
                     else:
                         ret = layer(self._t, *args, **kwargs)
                     return LinearWrap(ret)
-            return layer_func
+            return f
         else:
             assert layer_name == 'tf', \
                 "Calling LinearWrap.{}:" \
@@ -79,9 +79,6 @@ class LinearWrap(object):
         """
         Apply a function on the wrapped tensor. The tensor
         will be the second argument of func.
-
-        This is because many symbolic functions
-        (such as tensorpack's layers) takes 'scope' as the first argument.
 
         Returns:
             LinearWrap: ``LinearWrap(func(args[0], self.tensor(), *args[1:], **kwargs))``.

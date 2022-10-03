@@ -1,12 +1,13 @@
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python
+# -*- coding: UTF-8 -*-
 # File: svhn.py
+# Author: Yuxin Wu <ppwwyyxx@gmail.com>
 
-
-import numpy as np
 import os
+import numpy as np
 
 from ...utils import logger
-from ...utils.fs import download, get_dataset_path
+from ...utils.fs import get_dataset_path, download
 from ..base import RNGDataFlow
 
 __all__ = ['SVHNDigit']
@@ -49,10 +50,10 @@ class SVHNDigit(RNGDataFlow):
         self.Y[self.Y == 10] = 0
         SVHNDigit._Cache[name] = (self.X, self.Y)
 
-    def __len__(self):
+    def size(self):
         return self.X.shape[0]
 
-    def __iter__(self):
+    def get_data(self):
         n = self.X.shape[0]
         idxs = np.arange(n)
         if self.shuffle:
@@ -62,18 +63,14 @@ class SVHNDigit(RNGDataFlow):
             yield [self.X[k], self.Y[k]]
 
     @staticmethod
-    def get_per_pixel_mean(names=('train', 'test', 'extra')):
+    def get_per_pixel_mean():
         """
-        Args:
-            names (tuple[str]): names of the dataset split
-
-        Returns:
-            a 32x32x3 image, the mean of all images in the given datasets
+        return 32x32x3 image
         """
-        for name in names:
-            assert name in ['train', 'test', 'extra'], name
-        images = [SVHNDigit(x).X for x in names]
-        return np.concatenate(tuple(images)).mean(axis=0)
+        a = SVHNDigit('train')
+        b = SVHNDigit('test')
+        c = SVHNDigit('extra')
+        return np.concatenate((a.X, b.X, c.X)).mean(axis=0)
 
 
 try:

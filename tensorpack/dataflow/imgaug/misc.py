@@ -1,12 +1,14 @@
-# -*- coding: utf-8 -*-
+# -*- coding: UTF-8 -*-
 # File: misc.py
+# Author: Yuxin Wu <ppwwyyxx@gmail.com>
 
+import numpy as np
 import cv2
 
+from .base import ImageAugmentor
 from ...utils import logger
 from ...utils.argtools import shape2d
-from .base import ImageAugmentor
-from .transform import ResizeTransform, NoOpTransform, FlipTransform, TransposeTransform
+from .transform import ResizeTransform, TransformAugmentorBase
 
 __all__ = ['Flip', 'Resize', 'RandomResize', 'ResizeShortestEdge', 'Transpose']
 
@@ -25,20 +27,40 @@ class Flip(ImageAugmentor):
         super(Flip, self).__init__()
         if horiz and vert:
             raise ValueError("Cannot do both horiz and vert. Please use two Flip instead.")
-        if not horiz and not vert:
+        elif horiz:
+            self.code = 1
+        elif vert:
+            self.code = 0
+        else:
             raise ValueError("At least one of horiz or vert has to be True!")
         self._init(locals())
 
-    def get_transform(self, img):
+    def _get_augment_params(self, img):
         h, w = img.shape[:2]
         do = self._rand_range() < self.prob
-        if not do:
-            return NoOpTransform()
+        return (do, h, w)
+
+    def _augment(self, img, param):
+        do, _, _ = param
+        if do:
+            ret = cv2.flip(img, self.code)
+            if img.ndim == 3 and ret.ndim == 2:
+                ret = ret[:, :, np.newaxis]
         else:
-            return FlipTransform(h, w, self.horiz)
+            ret = img
+        return ret
+
+    def _augment_coords(self, coords, param):
+        do, h, w = param
+        if do:
+            if self.code == 0:
+                coords[:, 1] = h - coords[:, 1]
+            elif self.code == 1:
+                coords[:, 0] = w - coords[:, 0]
+        return coords
 
 
-class Resize(ImageAugmentor):
+class Resize(TransformAugmentorBase):
     """ Resize image to a target size"""
 
     def __init__(self, shape, interp=cv2.INTER_LINEAR):
@@ -50,13 +72,13 @@ class Resize(ImageAugmentor):
         shape = tuple(shape2d(shape))
         self._init(locals())
 
-    def get_transform(self, img):
+    def _get_augment_params(self, img):
         return ResizeTransform(
             img.shape[0], img.shape[1],
             self.shape[0], self.shape[1], self.interp)
 
 
-class ResizeShortestEdge(ImageAugmentor):
+class ResizeShortestEdge(TransformAugmentorBase):
     """
     Resize the shortest edge to a certain number while
     keeping the aspect ratio.
@@ -70,27 +92,28 @@ class ResizeShortestEdge(ImageAugmentor):
         size = int(size)
         self._init(locals())
 
-    def get_transform(self, img):
+    def _get_augment_params(self, img):
         h, w = img.shape[:2]
         scale = self.size * 1.0 / min(h, w)
         if h < w:
             newh, neww = self.size, int(scale * w + 0.5)
         else:
             newh, neww = int(scale * h + 0.5), self.size
-        return ResizeTransform(h, w, newh, neww, self.interp)
+        return ResizeTransform(
+            h, w, newh, neww, self.interp)
 
 
-class RandomResize(ImageAugmentor):
+class RandomResize(TransformAugmentorBase):
     """ Randomly rescale width and height of the image."""
 
-    def __init__(self, xrange, yrange=None, minimum=(0, 0), aspect_ratio_thres=0.15,
+    def __init__(self, xrange, yrange, minimum=(0, 0), aspect_ratio_thres=0.15,
                  interp=cv2.INTER_LINEAR):
         """
         Args:
             xrange (tuple): a (min, max) tuple. If is floating point, the
                 tuple defines the range of scaling ratio of new width, e.g. (0.9, 1.2).
                 If is integer, the tuple defines the range of new width in pixels, e.g. (200, 350).
-            yrange (tuple): similar to xrange, but for height. Should be None when aspect_ratio_thres==0.
+            yrange (tuple): similar to xrange, but for height.
             minimum (tuple): (xmin, ymin) in pixels. To avoid scaling down too much.
             aspect_ratio_thres (float): discard samples which change aspect ratio
                 larger than this threshold. Set to 0 to keep aspect ratio.
@@ -98,23 +121,16 @@ class RandomResize(ImageAugmentor):
         """
         super(RandomResize, self).__init__()
         assert aspect_ratio_thres >= 0
+        if aspect_ratio_thres == 0:
+            assert xrange == yrange
         self._init(locals())
 
         def is_float(tp):
             return isinstance(tp[0], float) or isinstance(tp[1], float)
-
-        if yrange is not None:
-            assert is_float(xrange) == is_float(yrange), "xrange and yrange has different type!"
+        assert is_float(xrange) == is_float(yrange), "xrange and yrange has different type!"
         self._is_scale = is_float(xrange)
 
-        if aspect_ratio_thres == 0:
-            if self._is_scale:
-                assert xrange == yrange or yrange is None
-            else:
-                if yrange is not None:
-                    logger.warn("aspect_ratio_thres==0, yrange is not used!")
-
-    def get_transform(self, img):
+    def _get_augment_params(self, img):
         cnt = 0
         h, w = img.shape[:2]
 
@@ -163,9 +179,20 @@ class Transpose(ImageAugmentor):
         """
         super(Transpose, self).__init__()
         self.prob = prob
+        self._init()
 
-    def get_transform(self, _):
-        if self.rng.rand() < self.prob:
-            return TransposeTransform()
-        else:
-            return NoOpTransform()
+    def _get_augment_params(self, img):
+        return self._rand_range() < self.prob
+
+    def _augment(self, img, do):
+        ret = img
+        if do:
+            ret = cv2.transpose(img)
+            if img.ndim == 3 and ret.ndim == 2:
+                ret = ret[:, :, np.newaxis]
+        return ret
+
+    def _augment_coords(self, coords, do):
+        if do:
+            coords = coords[:, ::-1]
+        return coords

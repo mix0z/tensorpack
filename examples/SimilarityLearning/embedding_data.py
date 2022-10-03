@@ -1,10 +1,10 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # File: embedding_data.py
 # Author: tensorpack contributors
 
 import numpy as np
-
-from tensorpack.dataflow import BatchData, dataset
+from tensorpack.dataflow import dataset, BatchData
 
 
 def get_test_data(batch=128):
@@ -42,7 +42,7 @@ class MnistPairs(dataset.Mnist):
         idx = self.rng.randint(len(self.data_dict[label]))
         return self.data_dict[label][idx].astype(np.float32)
 
-    def __iter__(self):
+    def get_data(self):
         while True:
             y = self.rng.randint(2)
             if y == 0:
@@ -55,7 +55,7 @@ class MnistPairs(dataset.Mnist):
 
 
 class MnistTriplets(MnistPairs):
-    def __iter__(self):
+    def get_data(self):
         while True:
             pick_label, pick_other = self.rng.choice(10, size=2, replace=False)
             yield [self.pick(pick_label), self.pick(pick_label), self.pick(pick_other)]

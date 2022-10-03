@@ -1,16 +1,6 @@
-#  -*- coding: utf-8 -*-
+#  -*- coding: UTF-8 -*-
 #  File: __init__.py
-
-# https://github.com/celery/kombu/blob/7d13f9b95d0b50c94393b962e6def928511bfda6/kombu/__init__.py#L34-L36
-STATICA_HACK = True
-globals()['kcah_acitats'[::-1].upper()] = False
-if STATICA_HACK:
-    from .bsds500 import *
-    from .cifar import *
-    from .ilsvrc import *
-    from .mnist import *
-    from .svhn import *
-    from .caltech101 import *
+#  Author: Yuxin Wu <ppwwyyxx@gmail.com>
 
 from pkgutil import iter_modules
 import os
@@ -22,12 +12,11 @@ __all__ = []
 def global_import(name):
     p = __import__(name, globals(), locals(), level=1)
     lst = p.__all__ if '__all__' in dir(p) else dir(p)
-    if lst:
-        del globals()[name]
-        for k in lst:
-            if not k.startswith('__'):
-                globals()[k] = p.__dict__[k]
-                __all__.append(k)
+    del globals()[name]
+    for k in lst:
+        if not k.startswith('__'):
+            globals()[k] = p.__dict__[k]
+            __all__.append(k)
 
 
 _CURR_DIR = os.path.dirname(__file__)

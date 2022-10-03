@@ -3,27 +3,16 @@
 
 ### Install Dependencies:
 + python binding for `lmdb`
-  + `pip install --user lmdb`
+	+ `pip install --user lmdb`
 + `bob.ap` package for MFCC extraction
-  + install [blitz](https://github.com/blitzpp/blitz) and openblas as dependencies of bob.ap
-  + `pip install --user bob.extension bob.blitz bob.core bob.sp bob.ap`
+	+ install blitz and openblas as dependencies of bob.ap
+	+ `pip install --user bob.ap`
 
 ### Prepare Data:
-We assume the following file structure:
-```
-TRAIN/
-  DR1/
-    FCJF0/
-      *.WAV     # NIST WAV file
-      *.TXT
-      *.PHN
-  ...
-```
-
 Convert NIST wav format to RIFF wav format:
 ```
 cd /PATH/TO/TIMIT
-find . -name '*.WAV' | parallel -P20 sox {} '{.}.wav'
+find -name '*.WAV' | parallel -P20 sox {} '{.}.wav'
 ```
 
 Extract MFCC features and phoneme labels, and save everything to LMDB database. The preprocessing
